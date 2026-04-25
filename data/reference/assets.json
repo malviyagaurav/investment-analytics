@@ -1,0 +1,100 @@
+{
+  "_meta": {
+    "description": "Manually curated reference data for assets without live APIs",
+    "last_updated": "2026-04-25",
+    "update_instructions": "Edit this file to update REIT/FD data. No live API exists for these."
+  },
+  "reit": {
+    "note": "Indian REITs/InvITs listed on NSE. Data manually curated — may not be current.",
+    "last_updated": "2026-04-25",
+    "items": [
+      {
+        "name": "Embassy Office Parks REIT",
+        "ticker": "EMBASSY",
+        "exchange": "NSE",
+        "type": "Office REIT",
+        "approx_yield_pct": 6.5,
+        "price_approx": 370,
+        "notes": "Largest office REIT in India. Bangalore, Mumbai, Pune properties."
+      },
+      {
+        "name": "Mindspace Business Parks REIT",
+        "ticker": "MINDSPACE",
+        "exchange": "NSE",
+        "type": "Office REIT",
+        "approx_yield_pct": 6.2,
+        "price_approx": 340,
+        "notes": "Office parks in Hyderabad, Mumbai, Pune, Chennai."
+      },
+      {
+        "name": "Brookfield India Real Estate Trust",
+        "ticker": "BIRET",
+        "exchange": "NSE",
+        "type": "Office REIT",
+        "approx_yield_pct": 5.8,
+        "price_approx": 295,
+        "notes": "Office properties in Noida, Kolkata, Mumbai, Gurugram."
+      },
+      {
+        "name": "Nexus Select Trust",
+        "ticker": "NXST",
+        "exchange": "NSE",
+        "type": "Retail REIT",
+        "approx_yield_pct": 5.5,
+        "price_approx": 145,
+        "notes": "Retail mall REIT. Properties across major metros."
+      }
+    ]
+  },
+  "fd": {
+    "note": "Top bank fixed deposit rates for general public. Rates change frequently — verify with bank before investing.",
+    "last_updated": "2026-04-25",
+    "items": [
+      {
+        "bank": "State Bank of India",
+        "type": "Public Sector",
+        "rate_1yr_pct": 6.80,
+        "rate_3yr_pct": 7.00,
+        "rate_5yr_pct": 6.50,
+        "deposit_insurance": "Up to ₹5 lakh (DICGC)",
+        "safety": "High"
+      },
+      {
+        "bank": "HDFC Bank",
+        "type": "Private Sector",
+        "rate_1yr_pct": 6.60,
+        "rate_3yr_pct": 7.00,
+        "rate_5yr_pct": 7.00,
+        "deposit_insurance": "Up to ₹5 lakh (DICGC)",
+        "safety": "High"
+      },
+      {
+        "bank": "ICICI Bank",
+        "type": "Private Sector",
+        "rate_1yr_pct": 6.70,
+        "rate_3yr_pct": 7.00,
+        "rate_5yr_pct": 7.00,
+        "deposit_insurance": "Up to ₹5 lakh (DICGC)",
+        "safety": "High"
+      },
+      {
+        "bank": "Bajaj Finance",
+        "type": "NBFC",
+        "rate_1yr_pct": 7.40,
+        "rate_3yr_pct": 8.05,
+        "rate_5yr_pct": 7.75,
+        "deposit_insurance": "Not covered by DICGC",
+        "safety": "Medium (AAA rated)"
+      },
+      {
+        "bank": "Shriram Finance",
+        "type": "NBFC",
+        "rate_1yr_pct": 7.69,
+        "rate_3yr_pct": 8.21,
+        "rate_5yr_pct": 7.79,
+        "deposit_insurance": "Not covered by DICGC",
+        "safety": "Medium (AA+ rated)"
+      }
+    ]
+  }
+}

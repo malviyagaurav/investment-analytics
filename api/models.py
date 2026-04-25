@@ -231,3 +231,44 @@ class PortfolioEvaluateRequest(BaseModel):
     rolling_window_points: int = Field(default=252, ge=20, le=2520)
     rolling_step_points: int = Field(default=21, ge=1, le=252)
     constraints: EvaluationConstraints = Field(default_factory=EvaluationConstraints)
+
+
+class CategoryRankRequest(BaseModel):
+    subject_token: str = "anonymous"
+    user_country: str = Field(default="IN", min_length=2, max_length=64)
+    asset_market: str = Field(default="IN", min_length=2, max_length=64)
+    serving_entity: str = Field(default="local_demo", min_length=1, max_length=128)
+    category: str = Field(min_length=5, max_length=120)
+
+
+class MultiCategoryRankRequest(BaseModel):
+    subject_token: str = "anonymous"
+    user_country: str = Field(default="IN", min_length=2, max_length=64)
+    asset_market: str = Field(default="IN", min_length=2, max_length=64)
+    serving_entity: str = Field(default="local_demo", min_length=1, max_length=128)
+    top_n: int = Field(default=5, ge=1, le=50)
+    categories: list[str] = Field(
+        default_factory=list,
+        max_length=15,
+        description="Specific categories to rank. Empty = default 4 core categories."
+    )
+
+
+class AllAssetsRankRequest(BaseModel):
+    subject_token: str = "anonymous"
+    user_country: str = Field(default="IN", min_length=2, max_length=64)
+    asset_market: str = Field(default="IN", min_length=2, max_length=64)
+    serving_entity: str = Field(default="local_demo", min_length=1, max_length=128)
+    top_n: int = Field(default=5, ge=1, le=50)
+
+
+class PortfolioHealthRequest(BaseModel):
+    subject_token: str = "anonymous"
+    user_country: str = Field(default="IN", min_length=2, max_length=64)
+    asset_market: str = Field(default="IN", min_length=2, max_length=64)
+    serving_entity: str = Field(default="local_demo", min_length=1, max_length=128)
+    scheme_codes: list[int] = Field(min_length=1, max_length=20, description="AMFI scheme codes of user holdings")
+    weights: Optional[dict[int, float]] = Field(
+        default=None,
+        description="Optional weights per scheme code (0-1). If omitted, equal weight assumed."
+    )

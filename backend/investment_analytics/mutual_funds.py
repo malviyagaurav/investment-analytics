@@ -726,8 +726,89 @@ def analyze_mutual_fund(payload: dict[str, Any]) -> dict[str, Any]:
         suppressed,
     )
 
+    summary = _build_summary(compiled, fund_name, benchmark_name)
+
     return {
         "insights": compiled,
         "suppressed_insights": suppressed,
         "data_quality": quality,
+        "summary": summary,
     }
+
+
+def _build_summary(
+    insights: list[dict],
+    fund_name: str,
+    benchmark_name: str,
+) -> dict[str, Any]:
+    """Extract key metrics and plain-language interpretation from compiled insights.
+
+    Returns a dict with:
+      - metrics: dict of labelled key numbers
+      - interpretation: list of factual plain-English sentences
+    """
+    metrics: dict[str, Any] = {}
+    interpretation: list[str] = []
+
+    for insight in insights:
+        p = insight.get("payload", {})
+        sd = p.get("supporting_data", {})
+
+        # ── Trailing returns ──
+        tr = sd.get("trailing_returns")
+        if tr:
+            for period_key in ("5Y", "3Y", "1Y"):
+                if period_key in tr:
+                    entry = tr[period_key]
+                    metrics["trailing_return_period"] = period_key
+                    metrics["fund_cagr_pct"] = entry["fund_cagr_pct"]
+                    metrics["benchmark_cagr_pct"] = entry["benchmark_cagr_pct"]
+                    metrics["cagr_difference_pct"] = entry["difference_pct_points"]
+
+                    diff = entry["difference_pct_points"]
+                    direction = "outperforming" if diff > 0 else "underperforming" if diff < 0 else "matching"
+                    interpretation.append(
+                        f"Over {period_key}, the fund returned {entry['fund_cagr_pct']:.2f}% CAGR "
+                        f"vs {benchmark_name} at {entry['benchmark_cagr_pct']:.2f}% — "
+                        f"{direction} by {abs(diff):.2f} percentage points."
+                    )
+                    break  # Use the longest available period
+
+        # ── Rolling hit ratio ──
+        excess = sd.get("excess_return_stats")
+        if excess:
+            hit = excess["hit_ratio_pct"]
+            n = excess["window_count"]
+            metrics["rolling_hit_ratio_pct"] = hit
+            metrics["rolling_window_count"] = n
+            interpretation.append(
+                f"The fund beat its benchmark in {hit:.1f}% of {n} rolling return windows."
+            )
+
+        # ── Drawdown ──
+        fd = sd.get("fund_drawdown")
+        bd = sd.get("benchmark_drawdown")
+        if fd:
+            metrics["max_drawdown_pct"] = fd["max_drawdown_pct"]
+            dd_sentence = f"Maximum drawdown was {abs(fd['max_drawdown_pct']):.1f}%"
+            if fd.get("trough_date"):
+                dd_sentence += f" (trough on {fd['trough_date']})"
+            if bd:
+                metrics["benchmark_max_drawdown_pct"] = bd["max_drawdown_pct"]
+                dd_sentence += f", compared to {abs(bd['max_drawdown_pct']):.1f}% for {benchmark_name}"
+            interpretation.append(dd_sentence + ".")
+
+    # ── Self-benchmark detection ──
+    is_self = "(self)" in benchmark_name.lower()
+    if is_self:
+        metrics["benchmark_type"] = "self"
+        interpretation.insert(
+            0,
+            "Note: benchmark is self-referencing — relative metrics compare the fund to itself "
+            "and will show zero difference.",
+        )
+    else:
+        metrics["benchmark_type"] = "index"
+        metrics["benchmark_name"] = benchmark_name
+
+    return {"metrics": metrics, "interpretation": interpretation}
