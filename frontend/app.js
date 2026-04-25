@@ -26,6 +26,17 @@ jsonToggle.addEventListener('click', () => {
   jsonToggle.textContent = hidden ? 'Manual Input ▾' : 'Manual Input ▸';
 });
 
+/* ── Demo panel toggle ── */
+
+const demoToggle = document.getElementById('demoToggle');
+const demoPanel = document.getElementById('demoPanel');
+
+demoToggle.addEventListener('click', () => {
+  const hidden = demoPanel.style.display === 'none';
+  demoPanel.style.display = hidden ? 'flex' : 'none';
+  demoToggle.textContent = hidden ? 'Test / Demo ▾' : 'Test / Demo ▸';
+});
+
 /* ── DOM helper ── */
 
 function el(tag, cls, text) {

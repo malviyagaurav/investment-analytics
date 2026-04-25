@@ -171,6 +171,32 @@ button:hover {
   font-weight: 700;
 }
 
+.btn-demo-toggle {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-size: 0.78rem;
+  font-weight: 650;
+  padding: 4px 10px;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.btn-demo-toggle:hover {
+  background: var(--bg);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.demo-panel {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0 16px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
 .results-heading {
   font-size: 1rem;
   font-weight: 600;
