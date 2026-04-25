@@ -1,0 +1,26 @@
+date,fund_nav,benchmark_nav,fund_name,benchmark_name,category,expense_ratio_pct,source,benchmark_source,license,benchmark_license,source_timestamp
+2020-03-31,100.00,100.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2020-06-30,110.00,112.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2020-09-30,108.00,109.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2020-12-31,118.00,120.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2021-03-31,124.00,127.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2021-06-30,135.00,138.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2021-09-30,130.00,134.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2021-12-31,144.00,149.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2022-03-31,139.00,146.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2022-06-30,125.00,132.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2022-09-30,131.00,136.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2022-12-31,142.00,147.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2023-03-31,150.00,158.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2023-06-30,160.00,170.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2023-09-30,157.00,168.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2023-12-31,171.00,183.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2024-03-31,180.00,195.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2024-06-30,188.00,205.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2024-09-30,185.00,203.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2024-12-31,198.00,218.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2025-03-31,207.00,229.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2025-06-30,216.00,238.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2025-09-30,211.00,234.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2025-12-31,226.00,251.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00
+2026-03-31,238.00,265.00,Sample Equity Fund Regular Growth,Sample Equity Benchmark TRI,Equity,1.20,sample_internal_nav,sample_internal_benchmark,redistributable,redistributable,2026-04-24T00:00:00+00:00

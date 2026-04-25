@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Investment Analytics Engine</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <div class="panel controls-panel">
+          <h1>Investment Analytics</h1>
+          <form id="analyticsForm">
+            <label>
+              User country
+              <input name="user_country" value="IN" autocomplete="country">
+            </label>
+            <label>
+              Asset market
+              <input name="asset_market" value="IN">
+            </label>
+            <label>
+              Serving entity
+              <input name="serving_entity" value="local_demo">
+            </label>
+            <label>
+              Portfolio JSON
+              <textarea name="portfolio_json" rows="14">{
+  "subject_token": "demo-user",
+  "profile": { "horizon_years": 5 },
+  "holdings": [
+    { "name": "Index Fund", "asset_class": "Mutual Fund", "market_value": 500000 },
+    { "name": "Large Cap Stock", "asset_class": "Equity", "market_value": 300000 },
+    { "name": "Bank Deposit", "asset_class": "Debt", "market_value": 200000 }
+  ]
+}</textarea>
+            </label>
+            <button type="submit">Run Diagnostics</button>
+          </form>
+        </div>
+
+        <div class="panel output-panel">
+          <div class="status-row">
+            <span id="gateStatus">Waiting</span>
+            <button id="scenarioButton" type="button">Run Market Shock</button>
+            <button id="fromSourceClean" type="button" class="btn-demo">Demo (clean data)</button>
+            <button id="fromSourceMessy" type="button" class="btn-demo">Demo (messy data)</button>
+          </div>
+
+          <!-- Fund Discovery Section -->
+          <div class="discover-section">
+            <h2 class="discover-heading">Fund Discovery</h2>
+            <div class="discover-controls">
+              <input id="discoverSearch" type="text" placeholder="Search mutual funds (e.g. HDFC Flexi Cap)" autocomplete="off">
+              <button id="discoverSearchBtn" type="button">Search</button>
+              <button id="registryRefreshBtn" type="button" class="btn-secondary" title="Download latest AMFI scheme list">Refresh Registry</button>
+              <span id="registryStatus" class="registry-status"></span>
+            </div>
+            <div id="discoverResults" class="discover-results"></div>
+            <div class="compare-bar" id="compareBar" style="display:none;">
+              <span id="compareCount">0 selected</span>
+              <button id="compareBtn" type="button" class="btn-compare" disabled>Compare Selected</button>
+              <button id="sipToggleBtn" type="button" class="btn-sip-toggle" disabled>SIP Simulator</button>
+              <button id="portfolioToggleBtn" type="button" class="btn-portfolio-toggle" disabled>Portfolio</button>
+              <button id="evaluateToggleBtn" type="button" class="btn-evaluate-toggle" disabled>Evaluate</button>
+              <button id="compareClearBtn" type="button" class="btn-secondary">Clear</button>
+            </div>
+            <div class="sip-controls" id="sipControls" style="display:none;">
+              <h3 class="sip-heading">SIP Simulator</h3>
+              <div class="sip-inputs">
+                <label class="sip-label">
+                  Monthly amount
+                  <input id="sipAmount" type="number" value="10000" min="1" max="10000000" step="1000">
+                </label>
+                <label class="sip-label">
+                  Window (months)
+                  <input id="sipWindowMonths" type="number" value="36" min="6" max="240" step="6">
+                </label>
+              </div>
+              <div id="sipWeights" class="sip-weights"></div>
+              <button id="sipRunBtn" type="button" class="btn-sip-run">Simulate SIP</button>
+            </div>
+            <div class="portfolio-controls" id="portfolioControls" style="display:none;">
+              <h3 class="portfolio-heading">Portfolio Aggregator</h3>
+              <div class="portfolio-inputs">
+                <label class="portfolio-label">
+                  Rolling window (trading days)
+                  <input id="portfolioWindow" type="number" value="252" min="20" max="2520" step="1">
+                </label>
+                <label class="portfolio-label">
+                  Step (trading days)
+                  <input id="portfolioStep" type="number" value="21" min="1" max="252" step="1">
+                </label>
+              </div>
+              <div id="portfolioWeights" class="portfolio-weights"></div>
+              <button id="portfolioRunBtn" type="button" class="btn-portfolio-run">Aggregate Portfolio</button>
+            </div>
+            <div class="evaluate-controls" id="evaluateControls" style="display:none;">
+              <h3 class="evaluate-heading">Portfolio Evaluation</h3>
+              <p class="evaluate-desc">Constraint thresholds below show engine defaults. Adjust to your criteria.</p>
+              <div class="evaluate-inputs">
+                <label class="evaluate-label">
+                  Max drawdown %
+                  <input id="evalMaxDrawdown" type="number" value="-30" max="0" step="1">
+                </label>
+                <label class="evaluate-label">
+                  Max recovery days
+                  <input id="evalMaxRecovery" type="number" value="730" min="1" step="30">
+                </label>
+                <label class="evaluate-label">
+                  Min rolling CAGR %
+                  <input id="evalMinCagr" type="number" value="5" step="0.5">
+                </label>
+                <label class="evaluate-label">
+                  Max volatility %
+                  <input id="evalMaxVol" type="number" value="2" min="0" step="0.1">
+                </label>
+                <label class="evaluate-label">
+                  Max correlation
+                  <input id="evalMaxCorr" type="number" value="0.85" min="-1" max="1" step="0.05">
+                </label>
+                <label class="evaluate-label">
+                  Max concentration (HHI)
+                  <input id="evalMaxHhi" type="number" value="0.50" min="0" max="1" step="0.05">
+                </label>
+                <label class="evaluate-label">
+                  Max single-fund drawdown %
+                  <input id="evalMaxFundDd" type="number" value="-40" max="0" step="1">
+                </label>
+              </div>
+              <div id="evaluateWeights" class="evaluate-weights"></div>
+              <button id="evaluateRunBtn" type="button" class="btn-evaluate-run">Evaluate Portfolio</button>
+            </div>
+          </div>
+
+          <div id="insights" class="insight-list"></div>
+        </div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
+
