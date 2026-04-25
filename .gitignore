@@ -28,4 +28,5 @@ htmlcov/
 # Runtime data (audit logs contain subject tokens)
 data/audit/
 data/cache/
+data/registry/
 

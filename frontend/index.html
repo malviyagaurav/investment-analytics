@@ -24,9 +24,13 @@
               Serving entity
               <input name="serving_entity" value="local_demo">
             </label>
-            <label>
-              Portfolio JSON
-              <textarea name="portfolio_json" rows="14">{
+            <div class="json-toggle-row">
+              <button type="button" id="jsonToggle" class="btn-json-toggle">Manual Input ▸</button>
+            </div>
+            <div id="jsonPanel" class="json-panel" style="display:none;">
+              <label>
+                Portfolio JSON
+                <textarea name="portfolio_json" rows="14">{
   "subject_token": "demo-user",
   "profile": { "horizon_years": 5 },
   "holdings": [
@@ -35,15 +39,16 @@
     { "name": "Bank Deposit", "asset_class": "Debt", "market_value": 200000 }
   ]
 }</textarea>
-            </label>
-            <button type="submit">Run Diagnostics</button>
+              </label>
+              <button type="submit">Run Diagnostics</button>
+            </div>
           </form>
         </div>
 
         <div class="panel output-panel">
           <div class="status-row">
             <span id="gateStatus">Waiting</span>
-            <button id="scenarioButton" type="button">Run Market Shock</button>
+            <button id="scenarioButton" type="button" class="btn-demo">Run Market Shock</button>
             <button id="fromSourceClean" type="button" class="btn-demo">Demo (clean data)</button>
             <button id="fromSourceMessy" type="button" class="btn-demo">Demo (messy data)</button>
           </div>
@@ -51,9 +56,10 @@
           <!-- Fund Discovery Section -->
           <div class="discover-section">
             <h2 class="discover-heading">Fund Discovery</h2>
+            <p class="discover-hint">Search a mutual fund, select 2–3, then Compare, Simulate SIP, or Evaluate.</p>
             <div class="discover-controls">
               <input id="discoverSearch" type="text" placeholder="Search mutual funds (e.g. HDFC Flexi Cap)" autocomplete="off">
-              <button id="discoverSearchBtn" type="button">Search</button>
+              <button id="discoverSearchBtn" type="button" class="btn-secondary">Search</button>
               <button id="registryRefreshBtn" type="button" class="btn-secondary" title="Download latest AMFI scheme list">Refresh Registry</button>
               <span id="registryStatus" class="registry-status"></span>
             </div>
@@ -134,6 +140,7 @@
             </div>
           </div>
 
+          <h3 class="results-heading" id="resultsHeading">Results</h3>
           <div id="insights" class="insight-list"></div>
         </div>
       </section>

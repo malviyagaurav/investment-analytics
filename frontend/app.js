@@ -7,6 +7,25 @@ const fromSourceMessy = document.getElementById('fromSourceMessy');
 
 let lastPortfolioValue = 1000000;
 
+/* ── Results heading visibility ── */
+
+const resultsHeading = document.getElementById('resultsHeading');
+
+new MutationObserver(() => {
+  resultsHeading.classList.toggle('visible', insightsEl.hasChildNodes());
+}).observe(insightsEl, { childList: true });
+
+/* ── JSON panel toggle ── */
+
+const jsonToggle = document.getElementById('jsonToggle');
+const jsonPanel = document.getElementById('jsonPanel');
+
+jsonToggle.addEventListener('click', () => {
+  const hidden = jsonPanel.style.display === 'none';
+  jsonPanel.style.display = hidden ? 'grid' : 'none';
+  jsonToggle.textContent = hidden ? 'Manual Input ▾' : 'Manual Input ▸';
+});
+
 /* ── DOM helper ── */
 
 function el(tag, cls, text) {
