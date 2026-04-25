@@ -494,6 +494,84 @@ button:hover {
   }
 }
 
+/* ── Summary block ── */
+
+.summary-block {
+  border-left: 3px solid var(--accent);
+  background: linear-gradient(135deg, var(--surface) 0%, #f0fdfa 100%);
+}
+
+.summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.summary-chip {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  min-width: 120px;
+}
+
+.summary-chip.chip-positive {
+  border-color: #059669;
+  background: #ecfdf5;
+}
+
+.summary-chip.chip-negative {
+  border-color: var(--danger);
+  background: #fef2f2;
+}
+
+.summary-chip.chip-neutral {
+  border-color: var(--ev-low);
+  background: var(--ev-low-bg);
+}
+
+.chip-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.chip-value {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.chip-positive .chip-value { color: #059669; }
+.chip-negative .chip-value { color: var(--danger); }
+
+.summary-interpretation {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.summary-interpretation li {
+  position: relative;
+  padding: 6px 0 6px 20px;
+  font-size: 0.88rem;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.summary-interpretation li::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* Ingestion report — distinct from analyzer insights */
 
 .ingestion-report {
@@ -1329,3 +1407,1227 @@ pre {
   font-size: 0.82rem;
 }
 
+/* ══════════════════════════════════════════════
+   Category Ranking
+   ══════════════════════════════════════════════ */
+
+.ranking-section {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.ranking-heading {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 0.3rem;
+}
+
+.ranking-hint {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 0.8rem;
+}
+
+.ranking-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 0.8rem;
+}
+
+.ranking-controls select {
+  flex: 1;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.88rem;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.btn-rank-run {
+  padding: 0.5rem 1.2rem;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-rank-run:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-rank-run:hover:not(:disabled) {
+  background: var(--accent-dark);
+}
+
+/* Ranking header card */
+.ranking-header {
+  border-left: 3px solid var(--accent);
+}
+
+.ranking-meta {
+  margin-bottom: 0.5rem;
+  padding: 6px 10px;
+  background: var(--bg);
+  border-radius: 4px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Individual ranked fund card */
+.ranking-card {
+  border-left: 3px solid var(--line);
+  transition: border-color 0.15s;
+}
+.ranking-card:hover {
+  border-left-color: var(--accent);
+}
+
+.rank-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.rank-badge.rank-top {
+  background: #ecfdf5;
+  border-color: #059669;
+  color: #059669;
+}
+
+.rank-name-block {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.rank-fund-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rank-fund-house {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.rank-dominance {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  padding: 4px 10px;
+  background: #f0fdfa;
+  border-radius: 12px;
+}
+
+/* Strengths / weaknesses */
+.rank-strengths,
+.rank-weaknesses {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+}
+.rank-strengths li,
+.rank-weaknesses li {
+  position: relative;
+  padding: 3px 0 3px 18px;
+  font-size: 0.83rem;
+  line-height: 1.45;
+}
+.rank-strengths li::before {
+  content: '+';
+  position: absolute;
+  left: 0;
+  font-weight: 700;
+  color: #059669;
+}
+.rank-weaknesses li::before {
+  content: '−';
+  position: absolute;
+  left: 2px;
+  font-weight: 700;
+  color: var(--danger);
+}
+
+/* Excluded funds */
+.ranking-excluded {
+  border-left: 3px solid var(--ev-low);
+}
+.ranking-excl-toggle {
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+}
+.ranking-excl-row {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+.ranking-excl-name {
+  flex: 1;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ranking-excl-reason {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* Confidence badges */
+.rank-confidence {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.conf-high {
+  background: #ecfdf5;
+  color: #059669;
+}
+.conf-med {
+  background: #fffbeb;
+  color: #d97706;
+}
+.conf-low {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+/* Multi-category section */
+.multi-rank-section {
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px dashed var(--line);
+}
+
+.ranking-subheading {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 0.2rem;
+}
+
+.btn-multi-rank {
+  margin-top: 0.5rem;
+  background: #0d9488;
+}
+.btn-multi-rank:hover:not(:disabled) {
+  background: #0f766e;
+}
+
+/* Multi-category cards */
+.multi-cat-section {
+  border-left: 3px solid var(--accent);
+}
+
+.multi-cat-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.multi-cat-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0;
+}
+
+.multi-cat-bench {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.multi-cat-count {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.multi-cat-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.multi-cat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.multi-cat-name-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.multi-cat-metrics {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.multi-cat-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.rank-badge-sm {
+  min-width: 30px;
+  height: 30px;
+  font-size: 0.8rem;
+}
+
+.rank-dominance-sm {
+  font-size: 0.75rem;
+  padding: 3px 8px;
+}
+
+/* All Assets view */
+.multi-rank-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 0.5rem;
+}
+
+.btn-all-assets {
+  background: #7c3aed;
+}
+.btn-all-assets:hover:not(:disabled) {
+  background: #6d28d9;
+}
+
+.all-assets-hint {
+  margin-top: 0.3rem;
+  font-style: italic;
+}
+
+.all-assets-header {
+  border-left-color: #7c3aed;
+}
+
+/* Asset class section headers */
+.asset-class-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 1.5rem 0 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid var(--ink);
+}
+
+.asset-class-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--ink);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.asset-class-subtitle {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Asset class color coding */
+.asset-debt {
+  border-left-color: #0284c7;
+}
+
+.asset-gold {
+  border-left-color: #d97706;
+}
+
+/* Top in category label */
+.multi-cat-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.top-in-category-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #059669;
+  background: #ecfdf5;
+  padding: 1px 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.rank-top-cat {
+  background: #059669;
+  border-color: #059669;
+  color: #fff;
+}
+
+/* Global disclaimer */
+.global-disclaimer {
+  font-size: 0.73rem;
+  color: var(--muted);
+  text-align: center;
+  margin: 0 0 6px;
+  font-style: italic;
+}
+
+/* Summary block — best picks at a glance */
+.summary-block {
+  border-left: 3px solid #059669;
+  background: linear-gradient(135deg, #f0fdf4 0%, #fff 100%);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.summary-col {
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+}
+
+.summary-col-title {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.summary-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  flex-wrap: wrap;
+}
+
+.summary-pick-cat {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 90px;
+}
+
+.summary-pick-arrow {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.summary-pick-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.summary-pick-note {
+  font-size: 0.72rem;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.summary-conf {
+  font-size: 0.65rem;
+  padding: 1px 5px;
+}
+
+/* Low-confidence fund suppression */
+.low-confidence-row {
+  opacity: 0.5;
+  filter: grayscale(40%);
+}
+
+/* Debt risk tags */
+.risk-tag {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.risk-low {
+  color: #059669;
+  background: #ecfdf5;
+}
+
+.risk-med {
+  color: #d97706;
+  background: #fffbeb;
+}
+
+.risk-high {
+  color: #b42318;
+  background: #fef2f2;
+}
+
+/* Summary disclaimer */
+.summary-disclaimer {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-style: italic;
+  margin: 4px 0 8px;
+}
+
+/* Low-confidence toggle */
+.low-conf-toggle {
+  display: block;
+  width: 100%;
+  padding: 8px 0;
+  margin-top: 4px;
+  background: none;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  text-align: center;
+}
+
+.low-conf-toggle:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* Fallback benchmark warning */
+.bench-fallback {
+  color: #d97706;
+  font-weight: 600;
+}
+
+/* Gold ETF note */
+.gold-etf-note {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-style: italic;
+  margin: 4px 0 12px;
+  padding-left: 8px;
+}
+
+/* Asset class disclaimer */
+.asset-class-disclaimer {
+  font-size: 0.73rem;
+  color: #d97706;
+  font-style: italic;
+  margin: 0 0 8px;
+  padding-left: 4px;
+}
+
+/* Low-confidence banner inside toggle container */
+.low-conf-banner {
+  font-size: 0.73rem;
+  color: #d97706;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+
+/* Toned-down summary */
+.summary-muted {
+  border-left-color: var(--line);
+  background: var(--surface);
+}
+
+.summary-title-sm {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Portfolio Health Check
+   ═══════════════════════════════════════════════════════════════ */
+
+.portfolio-health-section {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.health-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.health-codes-input {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+.health-codes-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.btn-health-check {
+  background: #7c3aed;
+  color: #fff;
+}
+
+.btn-health-check:hover {
+  background: #6d28d9;
+}
+
+/* Risk summary */
+.health-risk-summary {
+  border-left: 3px solid #6366f1;
+}
+
+.health-risk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.health-risk-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.health-risk-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+.health-risk-note {
+  font-size: 0.72rem;
+  color: #d97706;
+  margin: 4px 0 0;
+}
+
+.risk-tag-lg {
+  font-size: 0.85rem;
+  padding: 4px 12px;
+}
+
+/* Risk bars */
+.risk-bar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.risk-bar-label {
+  font-size: 0.73rem;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.risk-bar {
+  height: 8px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.risk-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+
+.risk-bar-eq { background: #059669; }
+.risk-bar-dt { background: #3b82f6; }
+.risk-bar-other { background: #9ca3af; }
+
+/* Status chips */
+.health-status-chip {
+  display: inline-block;
+  font-size: 0.73rem;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 8px;
+  margin-right: 4px;
+}
+
+.status-strong { background: #ecfdf5; color: #059669; }
+.status-neutral { background: #fffbeb; color: #d97706; }
+.status-weak { background: #fef2f2; color: #b42318; }
+.status-nr { background: #f3f4f6; color: #6b7280; }
+
+/* Concentration */
+.health-concentration {
+  border-left: 3px solid #d97706;
+}
+
+.conc-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.conc-cat {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ink);
+  min-width: 120px;
+}
+
+.conc-msg {
+  font-size: 0.75rem;
+  color: #d97706;
+}
+
+/* Holding cards */
+.health-card {
+  border-left-width: 3px;
+  border-left-style: solid;
+}
+
+.health-card-status-strong { border-left-color: #059669; }
+.health-card-status-neutral { border-left-color: #d97706; }
+.health-card-status-weak { border-left-color: #b42318; }
+.health-card-status-nr { border-left-color: #9ca3af; }
+
+.health-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.health-status-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.health-card-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.health-card-cat {
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.health-rank-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.health-rank {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.health-metrics {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.health-sw-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.health-strength {
+  font-size: 0.72rem;
+  color: #059669;
+}
+
+.health-weakness {
+  font-size: 0.72rem;
+  color: #b42318;
+}
+
+/* Alternatives */
+.health-alt-section {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+
+.health-alt-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+
+.health-alt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.health-alt-rank {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 28px;
+}
+
+.health-alt-name {
+  font-size: 0.78rem;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.health-alt-disclaimer {
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-style: italic;
+  margin: 4px 0 0;
+}
+
+/* Horizon tags */
+.health-horizon-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.health-horizon {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.health-horizon-note {
+  font-size: 0.58rem;
+  color: var(--muted);
+  font-style: italic;
+  padding-left: 2px;
+}
+
+.hz-short { background: #ecfdf5; color: #059669; }
+.hz-mid { background: #eff6ff; color: #2563eb; }
+.hz-long { background: #fef3c7; color: #92400e; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Decision Summary
+   ═══════════════════════════════════════════════════════════════ */
+
+.decision-summary {
+  border-left: 3px solid #6366f1;
+}
+
+.ds-disclaimer {
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-style: italic;
+  margin: 0 0 10px;
+}
+
+.ds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.ds-col {
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.ds-continue { background: #f0fdf4; border-color: #bbf7d0; }
+.ds-monitor { background: #fffbeb; border-color: #fde68a; }
+.ds-review { background: #fef2f2; border-color: #fecaca; }
+
+.ds-col-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: var(--ink);
+}
+
+.ds-continue .ds-col-label { color: #059669; }
+.ds-monitor .ds-col-label { color: #d97706; }
+.ds-review .ds-col-label { color: #b42318; }
+
+.ds-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  flex-wrap: wrap;
+}
+
+.ds-item-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ds-item-cat {
+  font-size: 0.68rem;
+  color: var(--muted);
+  background: var(--surface);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.ds-item-note {
+  font-size: 0.65rem;
+  color: #b42318;
+  font-style: italic;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Action badges (per card)
+   ═══════════════════════════════════════════════════════════════ */
+
+.health-action-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.action-continue { background: #d1fae5; color: #065f46; }
+.action-monitor { background: #fef3c7; color: #92400e; }
+.action-review { background: #fee2e2; color: #991b1b; }
+
+.health-action-note {
+  font-size: 0.72rem;
+  color: #b42318;
+  font-weight: 600;
+  margin: 4px 0 0 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Trust block
+   ═══════════════════════════════════════════════════════════════ */
+
+.health-trust-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: var(--surface);
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.trust-item {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Portfolio Issues
+   ═══════════════════════════════════════════════════════════════ */
+
+.health-issues {
+  border-left: 3px solid #ef4444;
+}
+
+.issue-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  border-left: 3px solid;
+}
+
+.issue-high { background: #fef2f2; border-left-color: #ef4444; }
+.issue-moderate { background: #fffbeb; border-left-color: #f59e0b; }
+.issue-info { background: #eff6ff; border-left-color: #3b82f6; }
+
+.issue-type {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  min-width: 100px;
+}
+
+.issue-msg {
+  font-size: 0.75rem;
+  color: var(--ink);
+  flex: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Justification
+   ═══════════════════════════════════════════════════════════════ */
+
+.health-just-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 2px 0 2px 28px;
+}
+
+.health-just-label {
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.health-just-item {
+  font-size: 0.68rem;
+  color: #059669;
+  background: #ecfdf5;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* ═══ #7: Top clarity anchor ═══ */
+.health-top-clarity {
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #7c3aed;
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  border-radius: 6px;
+  padding: 8px 16px;
+  margin: 0 0 12px;
+}
+
+/* ═══ #1: Data freshness ═══ */
+.health-data-freshness {
+  font-size: 0.75rem;
+  color: var(--muted);
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 4px;
+  padding: 4px 10px;
+  margin: 6px 0;
+}
+
+/* ═══ #5: Portfolio status ═══ */
+.health-portfolio-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  margin: 8px 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.ps-label { color: var(--text); font-weight: 500; }
+.ps-good { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+.ps-mod { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+.ps-high { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.ps-over { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+
+/* ═══ #3: Confidence filter ═══ */
+.health-conf-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  cursor: pointer;
+  margin-left: 12px;
+  user-select: none;
+}
+.health-conf-filter:hover { color: var(--text); }
+.conf-check { accent-color: #7c3aed; cursor: pointer; }
+
+/* ═══ #4: Category context ═══ */
+.health-cat-context {
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+/* ═══ Data quality flag ═══ */
+.health-dq-flag {
+  font-size: 0.72rem;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 4px;
+  padding: 3px 8px;
+  margin: 4px 0 0;
+}
+
+/* ═══ Outlier flag ═══ */
+.health-outlier-flag {
+  font-size: 0.72rem;
+  color: #9333ea;
+  background: #faf5ff;
+  border: 1px solid #e9d5ff;
+  border-radius: 4px;
+  padding: 3px 8px;
+  margin: 4px 0 0;
+}
+
+/* ═══ Behavioral warning ═══ */
+.health-behavior-warn {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 6px 12px;
+  margin: 8px 0 0;
+  text-align: center;
+}
+
+/* ═══ Data quality severity levels ═══ */
+.dq-mild { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+.dq-moderate { color: #b45309; background: #fff7ed; border-color: #fdba74; }
+.dq-severe { color: #dc2626; background: #fef2f2; border-color: #fecaca; font-weight: 600; }
+
+/* ═══ No major issues confirmation ═══ */
+.health-no-issues {
+  padding: 12px 16px;
+}
+.health-no-issues-text {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #059669;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  padding: 8px 14px;
+  text-align: center;
+  margin: 0;
+}
+
+/* ═══ Personal comparison (your fund gaps) ═══ */
+.health-your-gaps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 5px 8px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+}
+.health-your-gaps-label {
+  font-size: 0.7rem;
+  color: #991b1b;
+  font-weight: 600;
+  margin-right: 4px;
+}
+.health-your-gap-item {
+  font-size: 0.68rem;
+  color: #dc2626;
+  background: #fff;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid #fecaca;
+}
+.health-your-gaps-caveat {
+  font-size: 0.62rem;
+  color: var(--muted);
+  font-style: italic;
+  flex-basis: 100%;
+  margin-top: 2px;
+}
+
+/* ═══ Repeated mini behavioral warning ═══ */
+.health-mini-warn {
+  font-size: 0.68rem;
+  color: #92400e;
+  background: #fffbeb;
+  border-left: 3px solid #f59e0b;
+  padding: 3px 8px;
+  margin: 4px 0;
+  font-style: italic;
+}

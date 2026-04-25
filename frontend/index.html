@@ -141,6 +141,53 @@
               <div id="evaluateWeights" class="evaluate-weights"></div>
               <button id="evaluateRunBtn" type="button" class="btn-evaluate-run">Evaluate Portfolio</button>
             </div>
+
+            <!-- Category Ranking Section -->
+            <div class="ranking-section">
+              <h2 class="ranking-heading">Category Ranking</h2>
+              <p class="ranking-hint">Rank all funds in a category by pairwise dominance across 5 metrics.</p>
+              <div class="ranking-controls">
+                <select id="rankCategory">
+                  <option value="">Select category…</option>
+                  <option value="Equity Scheme - Large Cap Fund">Large Cap</option>
+                  <option value="Equity Scheme - Large & Mid Cap Fund">Large & Mid Cap</option>
+                  <option value="Equity Scheme - Mid Cap Fund">Mid Cap</option>
+                  <option value="Equity Scheme - Small Cap Fund">Small Cap</option>
+                  <option value="Equity Scheme - Multi Cap Fund">Multi Cap</option>
+                  <option value="Equity Scheme - Flexi Cap Fund">Flexi Cap</option>
+                  <option value="Equity Scheme - ELSS">ELSS</option>
+                  <option value="Equity Scheme - Value Fund">Value</option>
+                  <option value="Equity Scheme - Focused Fund">Focused</option>
+                  <option value="Equity Scheme - Dividend Yield Fund">Dividend Yield</option>
+                  <option value="Equity Scheme - Contra Fund">Contra</option>
+                </select>
+                <button id="rankRunBtn" type="button" class="btn-rank-run" disabled>Rank Funds</button>
+              </div>
+
+              <!-- Multi-Category Selection View -->
+              <div class="multi-rank-section">
+                <h3 class="ranking-subheading">Selection View — Top Picks Across Categories</h3>
+                <p class="ranking-hint">Rank top 5 funds in each core category side by side. No cross-category comparison.</p>
+                <div class="multi-rank-btns">
+                  <button id="multiRankBtn" type="button" class="btn-rank-run btn-multi-rank">Rank All Equity Categories</button>
+                  <button id="allAssetsBtn" type="button" class="btn-rank-run btn-all-assets">Full Investment View</button>
+                </div>
+                <p class="ranking-hint all-assets-hint">Equity + Debt + Gold — each ranked independently. No cross-asset comparison.</p>
+              </div>
+
+              <div class="portfolio-health-section">
+                <h3 class="ranking-subheading">Portfolio Health Check</h3>
+                <p class="ranking-hint">Enter your AMFI scheme codes to evaluate your existing holdings.</p>
+                <div class="health-input-row">
+                  <input id="healthCodesInput" type="text" class="health-codes-input"
+                    placeholder="e.g. 120503, 119598, 100356" maxlength="200">
+                  <button id="healthCheckBtn" type="button" class="btn-rank-run btn-health-check">Check Portfolio Health</button>
+                </div>
+                <p class="ranking-hint">Comma-separated scheme codes. Find codes via scheme search above.</p>
+              </div>
+
+              <div id="rankResults" class="rank-results"></div>
+            </div>
           </div>
 
           <h3 class="results-heading" id="resultsHeading">Results</h3>
