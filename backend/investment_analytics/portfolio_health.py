@@ -641,7 +641,7 @@ def _build_alternatives(
     held_metrics: Optional[Dict[str, Any]] = None,
     max_n: int = 3,
     unsafe_codes: Optional[set] = None,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Get top N alternatives from the same category, excluding the held fund.
 
     Skips funds with Low confidence, funds in `unsafe_codes` (severe data
@@ -653,23 +653,40 @@ def _build_alternatives(
     When held_metrics is omitted (the legacy path used for Not-Ranked
     holdings where we have no metrics to compare against), the gate is
     skipped — we just show the top-of-category as a reference list.
+
+    Returns (alts, filter_stats) where filter_stats counts WHY peers
+    were dropped: {"low_conf", "unsafe", "immaterial", "considered"}.
+    The caller uses these counts to emit an accurate action_note when
+    `alts` is empty — distinguishing "data thin" from "no peer is
+    materially better" (OBS-2).
     """
     if unsafe_codes is None:
         unsafe_codes = set()
     alts: List[Dict[str, Any]] = []
+    stats: Dict[str, int] = {
+        "low_conf": 0,    # peers dropped because confidence == Low
+        "unsafe": 0,      # peers dropped because of severe DQ / outlier
+        "immaterial": 0,  # peers dropped by the material-improvement gate
+        "considered": 0,  # peers that survived data filters (gate-eligible)
+    }
     for rf in ranked_funds:
         if rf.fund.scheme_code == exclude_code:
             continue
         if rf.confidence_level == "Low":
+            stats["low_conf"] += 1
             continue
         if rf.fund.scheme_code in unsafe_codes:
+            stats["unsafe"] += 1
             continue
+
+        stats["considered"] += 1
         alt_metrics_full = _metrics_for_display(rf.fund, asset_class)
 
         # Materiality gate — only when we can compare against the held fund.
         if held_metrics and not _alternative_is_material(
             held_metrics, alt_metrics_full, asset_class
         ):
+            stats["immaterial"] += 1
             continue
 
         alt: Dict[str, Any] = {
@@ -698,7 +715,7 @@ def _build_alternatives(
         alts.append(alt)
         if len(alts) >= max_n:
             break
-    return alts
+    return alts, stats
 
 
 def _metrics_for_display(fund: Any, asset_class: str) -> Dict[str, Any]:
@@ -875,7 +892,7 @@ def check_portfolio_health(
                 strengths=[],
                 weaknesses=["Excluded from ranking (insufficient data or not Direct Growth)"],
                 metrics={},
-                alternatives=_build_alternatives(ranking.ranked, code, asset_class),
+                alternatives=_build_alternatives(ranking.ranked, code, asset_class)[0],
             ))
             continue
 
@@ -919,7 +936,7 @@ def check_portfolio_health(
                 if rf_ol:
                     unsafe_peer_codes.add(rf.fund.scheme_code)
 
-            alts = _build_alternatives(
+            alts, alt_filter_stats = _build_alternatives(
                 ranking.ranked, code, asset_class,
                 held_metrics=metrics, unsafe_codes=unsafe_peer_codes,
             )
@@ -929,13 +946,33 @@ def check_portfolio_health(
                 if top_alt_fund:
                     top_alt_m = _metrics_for_display(top_alt_fund.fund, asset_class)
                     your_gaps = _build_your_fund_gaps(metrics, top_alt_m, asset_class)
+        else:
+            alt_filter_stats = {"low_conf": 0, "unsafe": 0, "immaterial": 0, "considered": 0}
 
         # Assign action
         action, action_note = _assign_action(status, bool(alts))
 
-        # If Weak/Neutral but no safe alternatives available, note it
+        # If Weak/Neutral but no alternatives surfaced, distinguish WHY:
+        # - data thin (every peer Low-conf or unsafe DQ/outlier)
+        # - no materially better peer existed (gate filtered everyone)
+        # OBS-1 / OBS-2: the previous single message conflated both cases.
         if status in ("Weak", "Neutral") and not alts:
-            action_note = "No reliable comparison peer available due to data limitations in this category"
+            considered = alt_filter_stats.get("considered", 0)
+            if considered == 0:
+                # No peer survived data filters — true data limitation.
+                action_note = (
+                    "No reliable comparison peer available due to data limitations in this category"
+                )
+            else:
+                # Peers existed but none cleared the material-improvement gate.
+                if status == "Neutral":
+                    action_note = (
+                        "Holding is comparable to peers — no materially better alternative in this category"
+                    )
+                else:
+                    action_note = (
+                        "No materially better peer in this category — current ranking position is comparable to top peers"
+                    )
 
         # Get benchmark name for trust block (equity only)
         bench_name = ""

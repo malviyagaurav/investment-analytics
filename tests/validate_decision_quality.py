@@ -230,6 +230,11 @@ def scenario_all_low_confidence() -> None:
         check(f"3.2 [{h['scheme_code']}] alts empty (every peer is Low-conf)",
               len(h["alternatives"]) == 0,
               f"alts={[a['scheme_code'] for a in h['alternatives']]}")
+        # OBS-2: action_note must say "data limitations" when every peer
+        # was filtered for data reasons (no peer survived to the gate).
+        check(f"3.3 [{h['scheme_code']}] action_note cites data limitations",
+              "data limitations" in (h.get("action_note") or "").lower(),
+              h.get("action_note"))
 
 
 def scenario_etf() -> None:
@@ -276,8 +281,11 @@ def scenario_marginal_no_alts() -> None:
     check("5.2 alternatives empty (gate drops marginal peers)",
           len(h["alternatives"]) == 0,
           f"alts={[a['scheme_code'] for a in h['alternatives']]}")
-    check("5.3 action_note explains no comparison peer",
-          "no reliable comparison peer" in (h["action_note"] or "").lower(),
+    # OBS-2: when peers were considered but none cleared the material gate,
+    # the action_note now says "no materially better peer" instead of
+    # the previous "data limitations" wording.
+    check("5.3 action_note explains no materially better peer",
+          "no materially better" in (h["action_note"] or "").lower(),
           h["action_note"])
 
 
@@ -370,6 +378,41 @@ def scenario_mixed_categories_and_concentration() -> None:
           str(out["concentration"]))
 
 
+def scenario_neutral_comparable_peers() -> None:
+    """OBS-1: Neutral holding where peers are NOT materially better must
+    emit the comparable-to-peers note, not the data-limitation note."""
+    banner("SCENARIO 8: Neutral holding + comparable peers (OBS-1 / OBS-2 split)")
+    cat = "Equity Scheme - Large Cap Fund"
+    # 5 funds, all Direct Plan Growth, all High-confidence (8y history).
+    # Held is rank 3 (middle → Neutral). Peers above are only marginally
+    # better — gate must filter them all and emit the OBS-1 phrasing.
+    f1 = F(801, excess_return_pct=2.6, consistency_pct=53,
+           max_drawdown_pct=-14.5, volatility_pct=11.5)
+    f2 = F(802, excess_return_pct=2.5, consistency_pct=52,
+           max_drawdown_pct=-14.7, volatility_pct=11.7)
+    held = F(803, excess_return_pct=2.3, consistency_pct=51,
+             max_drawdown_pct=-15.0, volatility_pct=12.0)
+    f4 = F(804, excess_return_pct=2.0, consistency_pct=50,
+           max_drawdown_pct=-15.5, volatility_pct=12.3)
+    f5 = F(805, excess_return_pct=1.8, consistency_pct=49,
+           max_drawdown_pct=-15.8, volatility_pct=12.5)
+    eq_rankings = {cat: category_ranking([f1, f2, held, f4, f5], cat)}
+    out = run_with_rankings(
+        scheme_codes=[803],
+        registry=[Scheme(803, held.fund_name, cat)],
+        eq_rankings=eq_rankings, dt_rankings={},
+    )
+    h = out["holdings"][0]
+    check("8.1 status Neutral", h["status"] == "Neutral", h["status"])
+    check("8.2 alts empty (gate filters marginal peers)",
+          len(h["alternatives"]) == 0,
+          str([a["scheme_code"] for a in h["alternatives"]]))
+    # OBS-1: explicit "comparable to peers" framing for Neutral case.
+    check("8.3 action_note flags comparable holding (OBS-1)",
+          "comparable" in (h.get("action_note") or "").lower(),
+          h.get("action_note"))
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────
@@ -382,6 +425,7 @@ def main() -> int:
     scenario_marginal_no_alts()
     scenario_magnitude_calibration()
     scenario_mixed_categories_and_concentration()
+    scenario_neutral_comparable_peers()
 
     failed: List[Tuple[str, str]] = []
     total = 0

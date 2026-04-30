@@ -283,10 +283,94 @@ class MaterialImprovementGateTests(unittest.TestCase):
         h = result.holdings[0]
         self.assertEqual(len(h.alternatives), 0,
                          "All peers marginal — gate must drop them")
+        # OBS-2: when peers existed but the material gate filtered them all,
+        # the action_note distinguishes "no materially better" from
+        # "data limitations". Held is Weak in this fixture, so we expect
+        # the Weak-specific phrasing.
         self.assertEqual(
             h.action_note,
-            "No reliable comparison peer available due to data limitations in this category",
+            "No materially better peer in this category — current ranking position is comparable to top peers",
         )
+
+
+class ActionNoteFraming(unittest.TestCase):
+    """OBS-1 / OBS-2: action_note must distinguish data-limit cases from
+    no-materially-better-peer cases, and Weak / Neutral phrasing must
+    match the holding's status."""
+
+    def test_neutral_with_comparable_peers_says_comparable(self) -> None:
+        """OBS-1: Neutral holding + only marginally-better peers must
+        emit a 'comparable to peers' note, NOT 'data limitations'."""
+        cat = "Equity Scheme - Large Cap Fund"
+        funds = [
+            _make_fund(801, vol=11.5, dd=-14.5, cons=53, ret=2.6),
+            _make_fund(802, vol=11.7, dd=-14.7, cons=52, ret=2.5),
+            _make_fund(803, vol=12.0, dd=-15.0, cons=51, ret=2.3),  # held: rank 3
+            _make_fund(804, vol=12.3, dd=-15.5, cons=50, ret=2.0),
+            _make_fund(805, vol=12.5, dd=-15.8, cons=49, ret=1.8),
+        ]
+        ranked = [
+            RankedFund(rank=i + 1, fund=f, dominance_count=4 - i, total_peers=5,
+                       confidence_level="High", strengths=[], weaknesses=[])
+            for i, f in enumerate(funds)
+        ]
+        ranking = CategoryRanking(
+            category=cat, benchmark_name="Nifty 100", benchmark_code=999,
+            benchmark_fallback=False, ranked=ranked, excluded=[],
+            computed_at="2026-04-30T00:00:00+00:00", total_funds_in_category=5,
+        )
+        registry = [_Scheme(803, "Held Direct Plan - Growth", cat, "AMC 803")]
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None):
+            result = ph.check_portfolio_health(
+                scheme_codes=[803], weights=None, registry_path="ignored",
+            )
+        h = result.holdings[0]
+        self.assertEqual(h.status, "Neutral")
+        self.assertEqual(len(h.alternatives), 0)
+        self.assertIn("comparable", h.action_note.lower())
+        self.assertNotIn("data limitations", h.action_note.lower())
+
+    def test_weak_with_all_low_conf_peers_says_data_limitations(self) -> None:
+        """OBS-2: Weak holding + every peer Low-conf must say
+        'data limitations', NOT 'no materially better peer'."""
+        cat = "Equity Scheme - Mid Cap Fund"
+        # Held has full history so its peer-percentile is computed,
+        # but every peer has <5y history → all peers Low-confidence.
+        held = _make_fund(901, vol=20, dd=-30, cons=15, ret=-3.0,
+                          history_years=8.0)
+        peers = [
+            _make_fund(902 + i, vol=15 + i, dd=-18, cons=55 - i,
+                       ret=4 - i, history_years=3.0)
+            for i in range(4)
+        ]
+        # 902 = rank 1, ... 905 = rank 4, held 901 = rank 5 (Weak)
+        ordered = peers + [held]
+        ranked = [
+            RankedFund(
+                rank=i + 1, fund=f, dominance_count=4 - i, total_peers=5,
+                confidence_level=("Low" if f.history_years < 5 else "High"),
+                strengths=[], weaknesses=[],
+            )
+            for i, f in enumerate(ordered)
+        ]
+        ranking = CategoryRanking(
+            category=cat, benchmark_name="Nifty Midcap 150", benchmark_code=998,
+            benchmark_fallback=False, ranked=ranked, excluded=[],
+            computed_at="2026-04-30T00:00:00+00:00", total_funds_in_category=5,
+        )
+        registry = [_Scheme(901, "Held Direct Plan - Growth", cat, "AMC 901")]
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None):
+            result = ph.check_portfolio_health(
+                scheme_codes=[901], weights=None, registry_path="ignored",
+            )
+        h = result.holdings[0]
+        self.assertEqual(h.status, "Weak")
+        self.assertEqual(len(h.alternatives), 0)
+        self.assertIn("data limitations", h.action_note.lower())
 
 
 class DecisionSummaryWeightTests(unittest.TestCase):
