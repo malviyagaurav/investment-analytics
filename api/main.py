@@ -1345,7 +1345,7 @@ def analytics_portfolio_health(payload: PortfolioHealthRequest) -> dict:
         },
     )
 
-    return {"gate": gate, "health": portfolio_health_to_dict(result)}
+    return {"gate": gate, "health": portfolio_health_to_dict(result, payload.weights)}
 
 
 frontend_dir = ROOT / "frontend"

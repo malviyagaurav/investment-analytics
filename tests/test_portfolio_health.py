@@ -179,5 +179,194 @@ class WeakFirstHoldingTests(unittest.TestCase):
                          "Strong holding must not be flagged severe based on prior fund's peer set")
 
 
+class MaterialImprovementGateTests(unittest.TestCase):
+    """P4: alternatives must beat held on >=3 metrics AND show one moderate+ improvement."""
+
+    def _ranking_with_marginal_and_material_peers(self) -> CategoryRanking:
+        # Held fund (rank 5) is the bottom of the pack.
+        held = _make_fund(105, vol=15.0, dd=-20.0, cons=50.0, ret=0.5)
+        # Peer 101: rank 1, materially better (excess return +5pp, consistency +20pp).
+        material = _make_fund(101, vol=11.0, dd=-12.0, cons=70.0, ret=5.0)
+        # Peer 102: rank 2, only marginally better (+0.5pp return, +2pp consistency, etc.)
+        marginal = _make_fund(102, vol=14.5, dd=-19.5, cons=52.0, ret=1.0)
+        # Peer 103: rank 3, beats held on 2 metrics but is dominated overall on the rest.
+        partial = _make_fund(103, vol=14.0, dd=-25.0, cons=48.0, ret=0.7)
+        # Peer 104: rank 4, slightly better on volatility only.
+        weak = _make_fund(104, vol=14.8, dd=-22.0, cons=49.0, ret=0.4)
+
+        all_funds = [material, marginal, partial, weak, held]
+        ranked = []
+        for i, fund in enumerate(all_funds):
+            ranked.append(RankedFund(
+                rank=i + 1, fund=fund, dominance_count=4 - i, total_peers=5,
+                confidence_level="High", strengths=[], weaknesses=[],
+            ))
+        return CategoryRanking(
+            category="Equity Scheme - Large Cap Fund",
+            benchmark_name="Nifty 100", benchmark_code=999, benchmark_fallback=False,
+            ranked=ranked, excluded=[],
+            computed_at="2026-04-30T00:00:00+00:00",
+            total_funds_in_category=5,
+        )
+
+    def test_marginal_alternative_is_filtered_out(self) -> None:
+        registry = [_Scheme(105, "Held Direct Plan - Growth",
+                            "Equity Scheme - Large Cap Fund", "AMC 105")]
+        ranking = self._ranking_with_marginal_and_material_peers()
+
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None):
+            result = ph.check_portfolio_health(
+                scheme_codes=[105], weights=None, registry_path="ignored",
+            )
+
+        h = result.holdings[0]
+        self.assertEqual(h.status, "Weak")
+        # Material peer (101) survives the gate; marginal peer (102) does not.
+        alt_codes = {a["scheme_code"] for a in h.alternatives}
+        self.assertIn(101, alt_codes, "Materially better peer must be surfaced")
+        self.assertNotIn(102, alt_codes, "Marginal peer must be filtered (P4 gate)")
+
+    def test_justification_carries_magnitude(self) -> None:
+        registry = [_Scheme(105, "Held Direct Plan - Growth",
+                            "Equity Scheme - Large Cap Fund", "AMC 105")]
+        ranking = self._ranking_with_marginal_and_material_peers()
+
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None):
+            result = ph.check_portfolio_health(
+                scheme_codes=[105], weights=None, registry_path="ignored",
+            )
+
+        h = result.holdings[0]
+        self.assertGreater(len(h.alternatives), 0)
+        for alt in h.alternatives:
+            self.assertIn("metrics", alt, "alt must expose full metric set for UI-7")
+            for j in alt["justification"]:
+                self.assertIn("reason", j)
+                self.assertIn("magnitude", j)
+                self.assertIn(j["magnitude"], {"small", "moderate", "large"})
+
+    def test_no_alternative_when_only_marginal_peers_exist(self) -> None:
+        """Held vs all-marginal peers — gate should drop everyone, action_note explains."""
+        # Held at rank 5; peers 101-104 only marginally better on each metric.
+        held = _make_fund(105, vol=15.0, dd=-20.0, cons=50.0, ret=2.0)
+        peers = [
+            _make_fund(101, vol=14.5, dd=-19.0, cons=52.0, ret=2.5),
+            _make_fund(102, vol=14.7, dd=-19.5, cons=51.0, ret=2.3),
+            _make_fund(103, vol=14.9, dd=-19.8, cons=50.5, ret=2.1),
+            _make_fund(104, vol=14.95, dd=-19.9, cons=50.2, ret=2.05),
+        ]
+        ranked = [
+            RankedFund(rank=i + 1, fund=f, dominance_count=4 - i, total_peers=5,
+                       confidence_level="High", strengths=[], weaknesses=[])
+            for i, f in enumerate(peers + [held])
+        ]
+        ranking = CategoryRanking(
+            category="Equity Scheme - Large Cap Fund",
+            benchmark_name="Nifty 100", benchmark_code=999, benchmark_fallback=False,
+            ranked=ranked, excluded=[],
+            computed_at="2026-04-30T00:00:00+00:00",
+            total_funds_in_category=5,
+        )
+        registry = [_Scheme(105, "Held Direct Plan - Growth",
+                            "Equity Scheme - Large Cap Fund", "AMC 105")]
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None):
+            result = ph.check_portfolio_health(
+                scheme_codes=[105], weights=None, registry_path="ignored",
+            )
+
+        h = result.holdings[0]
+        self.assertEqual(len(h.alternatives), 0,
+                         "All peers marginal — gate must drop them")
+        self.assertEqual(
+            h.action_note,
+            "No reliable comparison peer available due to data limitations in this category",
+        )
+
+
+class DecisionSummaryWeightTests(unittest.TestCase):
+    """UI-1: decision summary entries must carry weight_pct and sort by it desc."""
+
+    def _ranking_with_three_holdings(self) -> Tuple[List, CategoryRanking]:
+        # Three funds: 201 Strong (rank 1), 202 Neutral (rank 3), 203 Weak (rank 5).
+        funds = [
+            _make_fund(201, vol=10, dd=-12, cons=72, ret=5.0),
+            _make_fund(204, vol=11, dd=-13, cons=66, ret=4.0),
+            _make_fund(202, vol=12, dd=-15, cons=55, ret=2.5),
+            _make_fund(205, vol=13, dd=-17, cons=45, ret=1.0),
+            _make_fund(203, vol=20, dd=-30, cons=20, ret=-3.0),
+        ]
+        ranked = [
+            RankedFund(rank=i + 1, fund=f, dominance_count=4 - i, total_peers=5,
+                       confidence_level="High", strengths=[], weaknesses=[])
+            for i, f in enumerate(funds)
+        ]
+        ranking = CategoryRanking(
+            category="Equity Scheme - Large Cap Fund",
+            benchmark_name="Nifty 100", benchmark_code=999, benchmark_fallback=False,
+            ranked=ranked, excluded=[],
+            computed_at="2026-04-30T00:00:00+00:00",
+            total_funds_in_category=5,
+        )
+        registry = [
+            _Scheme(201, "Big Fund Direct Plan - Growth",
+                    "Equity Scheme - Large Cap Fund", "AMC 201"),
+            _Scheme(202, "Mid Fund Direct Plan - Growth",
+                    "Equity Scheme - Large Cap Fund", "AMC 202"),
+            _Scheme(203, "Tiny Fund Direct Plan - Growth",
+                    "Equity Scheme - Large Cap Fund", "AMC 203"),
+        ]
+        return registry, ranking
+
+    def test_decision_summary_entries_include_weight_pct(self) -> None:
+        from backend.investment_analytics.portfolio_health import (
+            check_portfolio_health, portfolio_health_to_dict,
+        )
+        registry, ranking = self._ranking_with_three_holdings()
+        # Heavy on the Weak holding so it should sort first in Review.
+        weights = {201: 0.15, 202: 0.25, 203: 0.60}
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None):
+            result = check_portfolio_health(
+                scheme_codes=[201, 202, 203], weights=weights, registry_path="ignored",
+            )
+        out = portfolio_health_to_dict(result, weights=weights)
+        self.assertEqual(out["schema_version"], "v2")
+        ds = out["decision_summary"]
+        for bucket in ("Continue", "Monitor", "Review"):
+            for entry in ds[bucket]:
+                self.assertIn("weight_pct", entry)
+        # Bucket totals exposed for the UI column header.
+        self.assertIn("decision_summary_weight_pct", out)
+
+    def test_decision_summary_is_sorted_by_weight_desc(self) -> None:
+        from backend.investment_analytics.portfolio_health import (
+            check_portfolio_health, portfolio_health_to_dict,
+        )
+        registry, ranking = self._ranking_with_three_holdings()
+        weights = {201: 0.10, 202: 0.30, 203: 0.60}
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None):
+            result = check_portfolio_health(
+                scheme_codes=[201, 202, 203], weights=weights, registry_path="ignored",
+            )
+        out = portfolio_health_to_dict(result, weights=weights)
+        # Within each non-empty bucket entries must be desc by weight_pct.
+        for bucket in ("Continue", "Monitor", "Review"):
+            entries = out["decision_summary"][bucket]
+            for i in range(1, len(entries)):
+                self.assertGreaterEqual(
+                    entries[i - 1]["weight_pct"], entries[i]["weight_pct"],
+                    f"{bucket} entries not sorted desc by weight_pct",
+                )
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

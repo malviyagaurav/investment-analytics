@@ -19,6 +19,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Response schema bumped from v1 to v2 for Slice 1:
+# - decision_summary entries gain weight_pct
+# - alternatives.justification is now List[{reason, magnitude, metric}]
+#   (was List[str])
+# - alternatives must pass _alternative_is_material gate
+PORTFOLIO_HEALTH_SCHEMA_VERSION = "v2"
+
 from backend.data_discovery.registry import SchemeEntry, load_registry
 from backend.investment_analytics.ranking import (
     ALL_RANKABLE_CATEGORIES,
@@ -111,65 +118,136 @@ def _assign_action(status: str, has_alternatives: bool) -> Tuple[str, str]:
 
 # ── Switch justification ──────────────────────────────────────
 
+# Material-improvement thresholds for the alternative-filter gate.
+# Calibrated to "would a thoughtful investor actually feel this delta
+# in net returns over a 3-5y horizon?" Conservative on equity (high
+# cross-sectional dispersion) and tighter on debt (compressed yields).
+# delta_for_moderate must be exceeded for a metric to be "material";
+# delta_for_large for a "large" magnitude tag.
+_ALT_THRESHOLDS = {
+    "equity": {
+        # key: (moderate_delta, large_delta) — units = same as the metric
+        "excess_return_pct":      (1.5,  3.0),   # +pp CAGR vs benchmark
+        "consistency_pct":        (10.0, 20.0),  # +pp rolling-window wins
+        "max_drawdown_pct":       (5.0,  10.0),  # pp shallower (alt - held > 0)
+        "volatility_pct":         (1.5,  3.0),   # pp lower
+        "downside_capture_ratio": (0.10, 0.20),  # ratio — lower better
+    },
+    "debt": {
+        "cagr_pct":               (0.75, 1.5),
+        "consistency_pct":        (5.0,  10.0),
+        "max_drawdown_pct":       (1.5,  3.0),
+        "volatility_pct":         (0.5,  1.0),
+        "risk_adj_return":        (0.5,  1.0),
+    },
+}
+
+
+def _improvement_magnitude(metric_key: str, delta: float, asset_class: str) -> str:
+    """Bucket a per-metric improvement delta into 'large' / 'moderate' / 'small'.
+
+    delta MUST be expressed as 'alt-better-than-held' in the metric's
+    natural direction (positive = better). Returns 'none' if the alt is
+    not better, 'small' if better but below the moderate threshold.
+    """
+    if delta <= 0:
+        return "none"
+    bands = _ALT_THRESHOLDS.get(asset_class, {}).get(metric_key)
+    if bands is None:
+        return "small"
+    moderate, large = bands
+    if delta >= large:
+        return "large"
+    if delta >= moderate:
+        return "moderate"
+    return "small"
+
+
+def _signed_delta(metric_key: str, held_val: float, alt_val: float) -> float:
+    """Return alt-vs-held delta in the metric's natural 'better' direction.
+
+    Positive delta means alt is better than held.
+    """
+    # Metrics where higher is better.
+    if metric_key in {"excess_return_pct", "consistency_pct", "cagr_pct",
+                      "risk_adj_return"}:
+        return alt_val - held_val
+    # Drawdown is stored as negative; less-negative = shallower = better.
+    if metric_key == "max_drawdown_pct":
+        return alt_val - held_val
+    # Lower-is-better.
+    if metric_key in {"volatility_pct", "downside_capture_ratio"}:
+        return held_val - alt_val
+    return 0.0
+
+
+_EQUITY_BULLETS: Tuple[Tuple[str, str], ...] = (
+    ("consistency_pct",        "Better consistency vs benchmark"),
+    ("max_drawdown_pct",       "Shallower drawdowns"),
+    ("volatility_pct",         "Lower volatility"),
+    ("downside_capture_ratio", "Better downside protection"),
+    ("excess_return_pct",      "Historically higher return than peers"),
+)
+_DEBT_BULLETS: Tuple[Tuple[str, str], ...] = (
+    ("cagr_pct",         "Historically higher return"),
+    ("volatility_pct",   "Lower volatility"),
+    ("max_drawdown_pct", "Shallower drawdowns"),
+    ("risk_adj_return",  "Better risk-adjusted return"),
+)
+
+
 def _build_justification(
     held_metrics: Dict[str, Any],
     alt_metrics: Dict[str, Any],
     asset_class: str,
-) -> List[str]:
+) -> List[Dict[str, str]]:
     """Build factual justification for why an alternative ranks higher.
 
-    Compares metric-by-metric and returns list of factual observations.
-    No % claims, no predictions.
+    Returns list of {"reason": ..., "magnitude": small/moderate/large}.
+    No percentage claims, no predictions. UI maps magnitude to display.
     """
-    reasons: List[str] = []
+    bullets = _EQUITY_BULLETS if asset_class == "equity" else _DEBT_BULLETS
+    out: List[Dict[str, str]] = []
+    for key, label in bullets:
+        h = held_metrics.get(key, 0) or 0
+        a = alt_metrics.get(key, 0) or 0
+        delta = _signed_delta(key, h, a)
+        if delta <= 0:
+            continue
+        out.append({
+            "reason": label,
+            "magnitude": _improvement_magnitude(key, delta, asset_class),
+            "metric": key,
+        })
+    return out
 
-    if asset_class == "equity":
-        h_cons = held_metrics.get("consistency_pct", 0) or 0
-        a_cons = alt_metrics.get("consistency_pct", 0) or 0
-        if a_cons > h_cons:
-            reasons.append("Better consistency vs benchmark")
 
-        h_dd = held_metrics.get("max_drawdown_pct", 0) or 0
-        a_dd = alt_metrics.get("max_drawdown_pct", 0) or 0
-        if a_dd > h_dd:  # less negative = shallower drawdown
-            reasons.append("Shallower drawdowns")
+def _alternative_is_material(
+    held_metrics: Dict[str, Any],
+    alt_metrics: Dict[str, Any],
+    asset_class: str,
+) -> bool:
+    """Gate: an alternative must beat held on >=3 metrics AND show at
+    least one moderate-or-large improvement to be surfaced.
 
-        h_vol = held_metrics.get("volatility_pct", 0) or 0
-        a_vol = alt_metrics.get("volatility_pct", 0) or 0
-        if a_vol < h_vol:
-            reasons.append("Lower volatility")
-
-        h_dc = held_metrics.get("downside_capture_ratio", 1) or 1
-        a_dc = alt_metrics.get("downside_capture_ratio", 1) or 1
-        if a_dc < h_dc:
-            reasons.append("Better downside protection")
-
-        h_ret = held_metrics.get("excess_return_pct", 0) or 0
-        a_ret = alt_metrics.get("excess_return_pct", 0) or 0
-        if a_ret > h_ret:
-            reasons.append("Historically higher return than peers")
-    else:
-        h_cagr = held_metrics.get("cagr_pct", 0) or 0
-        a_cagr = alt_metrics.get("cagr_pct", 0) or 0
-        if a_cagr > h_cagr:
-            reasons.append("Historically higher return")
-
-        h_vol = held_metrics.get("volatility_pct", 0) or 0
-        a_vol = alt_metrics.get("volatility_pct", 0) or 0
-        if a_vol < h_vol:
-            reasons.append("Lower volatility")
-
-        h_dd = held_metrics.get("max_drawdown_pct", 0) or 0
-        a_dd = alt_metrics.get("max_drawdown_pct", 0) or 0
-        if a_dd > h_dd:
-            reasons.append("Shallower drawdowns")
-
-        h_ra = held_metrics.get("risk_adj_return", 0) or 0
-        a_ra = alt_metrics.get("risk_adj_return", 0) or 0
-        if a_ra > h_ra:
-            reasons.append("Better risk-adjusted return")
-
-    return reasons
+    Without this gate the system would suggest rank-N+1 funds whose
+    advantage is statistically indistinguishable from rank-N — pure
+    churn-encouragement. The 3-of-5 wins requirement mirrors the
+    pairwise-dominance rule already used in ranking.py.
+    """
+    bullets = _EQUITY_BULLETS if asset_class == "equity" else _DEBT_BULLETS
+    wins = 0
+    has_material = False
+    for key, _label in bullets:
+        h = held_metrics.get(key, 0) or 0
+        a = alt_metrics.get(key, 0) or 0
+        delta = _signed_delta(key, h, a)
+        if delta > 0:
+            wins += 1
+            mag = _improvement_magnitude(key, delta, asset_class)
+            if mag in ("moderate", "large"):
+                has_material = True
+    return wins >= 3 and has_material
 
 
 def _build_your_fund_gaps(
@@ -566,13 +644,19 @@ def _build_alternatives(
 ) -> List[Dict[str, Any]]:
     """Get top N alternatives from the same category, excluding the held fund.
 
-    Skips funds with Low confidence or in the unsafe_codes set
-    (severe data quality / extreme outlier).
-    If held_metrics is provided, builds justification for each alternative.
+    Skips funds with Low confidence, funds in `unsafe_codes` (severe data
+    quality / extreme outlier), and funds whose advantage over the held
+    fund is not material per `_alternative_is_material`. Without the
+    materiality gate the function would suggest rank-N+1 funds with
+    statistically-indistinguishable improvements, encouraging churn.
+
+    When held_metrics is omitted (the legacy path used for Not-Ranked
+    holdings where we have no metrics to compare against), the gate is
+    skipped — we just show the top-of-category as a reference list.
     """
     if unsafe_codes is None:
         unsafe_codes = set()
-    alts = []
+    alts: List[Dict[str, Any]] = []
     for rf in ranked_funds:
         if rf.fund.scheme_code == exclude_code:
             continue
@@ -580,7 +664,14 @@ def _build_alternatives(
             continue
         if rf.fund.scheme_code in unsafe_codes:
             continue
-        alt_metrics = _metrics_for_display(rf.fund, asset_class)
+        alt_metrics_full = _metrics_for_display(rf.fund, asset_class)
+
+        # Materiality gate — only when we can compare against the held fund.
+        if held_metrics and not _alternative_is_material(
+            held_metrics, alt_metrics_full, asset_class
+        ):
+            continue
+
         alt: Dict[str, Any] = {
             "rank": rf.rank,
             "scheme_code": rf.fund.scheme_code,
@@ -588,6 +679,9 @@ def _build_alternatives(
             "fund_house": rf.fund.fund_house,
             "confidence_level": rf.confidence_level,
         }
+        # Expose the full metric set so the UI can render side-by-side
+        # comparisons (UI-7) without re-fetching peer data.
+        alt["metrics"] = alt_metrics_full
         if asset_class == "equity":
             alt["excess_return_pct"] = rf.fund.excess_return_pct
             alt["consistency_pct"] = rf.fund.consistency_pct
@@ -595,9 +689,9 @@ def _build_alternatives(
             alt["cagr_pct"] = rf.fund.fund_cagr_pct
             alt["volatility_pct"] = rf.fund.volatility_pct
 
-        # Justification: why this alternative ranks higher
+        # Justification: why this alternative ranks higher (with magnitude).
         if held_metrics:
-            alt["justification"] = _build_justification(held_metrics, alt_metrics, asset_class)
+            alt["justification"] = _build_justification(held_metrics, alt_metrics_full, asset_class)
         else:
             alt["justification"] = []
 
@@ -1008,29 +1102,64 @@ def _build_risk_summary(
 
 # ── Serialization ──────────────────────────────────────────────
 
-def portfolio_health_to_dict(result: PortfolioHealthResult) -> dict:
-    """Serialize for API response."""
+def portfolio_health_to_dict(
+    result: PortfolioHealthResult,
+    weights: Optional[Dict[int, float]] = None,
+) -> dict:
+    """Serialize for API response.
 
-    # Build decision summary (grouped by action)
+    `weights` (scheme_code -> 0..1) lets the decision_summary carry
+    weight_pct per entry so the frontend can prioritize Review items by
+    actual capital impact instead of input order. If omitted, all
+    weights default to equal share.
+    """
+    # Resolve weights — default to equal share if not provided.
+    n_holdings = len(result.holdings) or 1
+    eq_weight = 1.0 / n_holdings
+    if weights:
+        # Normalize to sum 1 across the holdings actually evaluated.
+        held_codes = {h.scheme_code for h in result.holdings}
+        held_weight_total = sum(weights.get(c, 0) for c in held_codes) or 0
+        if held_weight_total > 0:
+            resolved = {c: weights.get(c, 0) / held_weight_total for c in held_codes}
+        else:
+            resolved = {c: eq_weight for c in held_codes}
+    else:
+        resolved = {h.scheme_code: eq_weight for h in result.holdings}
+
+    # Build decision summary (grouped by action) — entries carry
+    # weight_pct so the UI can sort by capital impact.
     decision_summary: Dict[str, List[Dict[str, Any]]] = {
         "Continue": [],
         "Monitor": [],
         "Review": [],
     }
+    decision_weight_pct: Dict[str, float] = {"Continue": 0.0, "Monitor": 0.0, "Review": 0.0}
     for h in result.holdings:
+        w_pct = round(resolved.get(h.scheme_code, eq_weight) * 100, 1)
         entry = {
             "scheme_code": h.scheme_code,
             "fund_name": h.fund_name,
             "category_short": _short_category(h.category),
             "action_note": h.action_note,
+            "weight_pct": w_pct,
         }
-        decision_summary.get(h.action, decision_summary["Monitor"]).append(entry)
+        bucket = h.action if h.action in decision_summary else "Monitor"
+        decision_summary[bucket].append(entry)
+        decision_weight_pct[bucket] = round(decision_weight_pct[bucket] + w_pct, 1)
+
+    # Sort each bucket by weight_pct descending so highest-capital-
+    # impact action shows first.
+    for bucket in decision_summary:
+        decision_summary[bucket].sort(key=lambda e: -e["weight_pct"])
 
     return {
         "computed_at": result.computed_at,
+        "schema_version": PORTFOLIO_HEALTH_SCHEMA_VERSION,
         "total_holdings": len(result.holdings),
         "not_found_count": len(result.not_found),
         "decision_summary": decision_summary,
+        "decision_summary_weight_pct": decision_weight_pct,
         "holdings": [
             {
                 "scheme_code": h.scheme_code,
