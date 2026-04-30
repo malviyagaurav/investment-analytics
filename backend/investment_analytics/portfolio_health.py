@@ -795,6 +795,13 @@ def check_portfolio_health(
         dd = metrics.get("max_drawdown_pct", 0) or 0
         horizon = _horizon_tag(vol, dd, asset_class)
 
+        # Peer sets computed per-iteration, scoped to THIS fund's category.
+        # Must be defined before safe-peer-selection or dq/outlier flags use them.
+        peer_points: List[int] = [rf.fund.aligned_points for rf in ranking.ranked]
+        peer_metrics: List[Dict[str, Any]] = [
+            _metrics_for_display(rf.fund, asset_class) for rf in ranking.ranked
+        ]
+
         # Build alternatives for Weak and Neutral funds (with justification)
         alts: List[Dict[str, Any]] = []
         your_gaps: List[str] = []
@@ -842,7 +849,7 @@ def check_portfolio_health(
             bench_name = ranking.benchmark_name
 
         # ── Data quality flags ──
-        peer_points = [rf.fund.aligned_points for rf in ranking.ranked]
+        # peer_points / peer_metrics already computed above this iteration.
         dq_flags = _data_quality_flags(
             found.fund.history_years,
             found.fund.aligned_points,
@@ -851,7 +858,6 @@ def check_portfolio_health(
         )
 
         # ── Outlier flags ──
-        peer_metrics = [_metrics_for_display(rf.fund, asset_class) for rf in ranking.ranked]
         ol_flags = _outlier_flags(metrics, peer_metrics, asset_class)
 
         holdings.append(FundHealthResult(
