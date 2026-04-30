@@ -1,0 +1,410 @@
+"""Decision-quality validation harness — runs synthetic portfolios through
+the live `check_portfolio_health` + `portfolio_health_to_dict` pipeline and
+asserts properties that DON'T show up in code-only unit tests.
+
+These are the "looks correct but is wrong" failures that matter for a
+capital-allocation tool: ordering, magnitude believability, gate
+behavior, edge-case framing.
+
+Run with:  venv/bin/python -m tests.validate_decision_quality
+"""
+from __future__ import annotations
+
+import json
+import sys
+from typing import Any, Dict, List, Tuple
+from unittest.mock import patch
+
+from backend.investment_analytics import portfolio_health as ph
+from backend.investment_analytics.ranking import (
+    CategoryRanking, FundMetrics, RankedFund,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Builders
+# ─────────────────────────────────────────────────────────────────────────
+
+def F(code: int, **kw) -> FundMetrics:
+    base = dict(
+        scheme_code=code,
+        fund_name=f"Scheme {code} Direct Plan - Growth",
+        fund_house=f"AMC {code // 100}",
+        excess_return_pct=0.0,
+        max_drawdown_pct=-15.0,
+        consistency_pct=50.0,
+        volatility_pct=12.0,
+        downside_capture_ratio=1.0,
+        fund_cagr_pct=10.0,
+        benchmark_cagr_pct=8.0,
+        aligned_points=1500,
+        history_years=8.0,
+        drawdown_trough_date=None,
+    )
+    base.update(kw)
+    return FundMetrics(**base)
+
+
+def RF(rank: int, fund: FundMetrics, conf: str = "High") -> RankedFund:
+    return RankedFund(
+        rank=rank, fund=fund,
+        dominance_count=max(0, 5 - rank), total_peers=5,
+        confidence_level=conf, strengths=[], weaknesses=[],
+    )
+
+
+class Scheme:
+    def __init__(self, code: int, name: str, category: str, house: str = "AMC X"):
+        self.scheme_code = code
+        self.scheme_name = name
+        self.scheme_category = category
+        self.fund_house = house
+
+
+def category_ranking(funds_in_order: List[FundMetrics],
+                     category: str, benchmark: str = "Nifty 100") -> CategoryRanking:
+    ranked = [RF(i + 1, f, conf=("Low" if f.history_years < 5 else "High"))
+              for i, f in enumerate(funds_in_order)]
+    return CategoryRanking(
+        category=category,
+        benchmark_name=benchmark,
+        benchmark_code=999,
+        benchmark_fallback=False,
+        ranked=ranked,
+        excluded=[],
+        computed_at="2026-04-30T00:00:00+00:00",
+        total_funds_in_category=len(funds_in_order),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Reporter
+# ─────────────────────────────────────────────────────────────────────────
+
+REPORT: List[Dict[str, Any]] = []
+
+
+def check(case: str, condition: bool, detail: str = "") -> bool:
+    REPORT.append({"case": case, "pass": bool(condition), "detail": detail})
+    return bool(condition)
+
+
+def banner(title: str) -> None:
+    REPORT.append({"banner": title})
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Scenarios
+# ─────────────────────────────────────────────────────────────────────────
+
+def run_with_rankings(scheme_codes: List[int],
+                      registry: List[Scheme],
+                      eq_rankings: Dict[str, CategoryRanking],
+                      dt_rankings: Dict[str, CategoryRanking],
+                      weights=None) -> Dict[str, Any]:
+    def eq_lookup(category: str, _registry_path: str):
+        return eq_rankings.get(category)
+
+    def dt_lookup(category: str, _registry_path: str):
+        return dt_rankings.get(category)
+
+    with patch.object(ph, "load_registry", return_value=registry), \
+         patch.object(ph, "_get_or_rank_equity", side_effect=eq_lookup), \
+         patch.object(ph, "_get_or_rank_debt", side_effect=dt_lookup):
+        result = ph.check_portfolio_health(
+            scheme_codes=scheme_codes,
+            weights=weights,
+            registry_path="ignored",
+        )
+    return ph.portfolio_health_to_dict(result, weights=weights)
+
+
+def scenario_single_fund() -> None:
+    banner("SCENARIO 1: Single fund portfolio (Weak)")
+    cat = "Equity Scheme - Large Cap Fund"
+    funds = [
+        F(101, excess_return_pct=4.0, consistency_pct=70, max_drawdown_pct=-12, volatility_pct=10),
+        F(102, excess_return_pct=3.0, consistency_pct=65, max_drawdown_pct=-13, volatility_pct=11),
+        F(103, excess_return_pct=2.0, consistency_pct=58, max_drawdown_pct=-14, volatility_pct=12),
+        F(104, excess_return_pct=1.0, consistency_pct=55, max_drawdown_pct=-16, volatility_pct=13),
+        F(105, excess_return_pct=-2.0, consistency_pct=20, max_drawdown_pct=-30, volatility_pct=22),
+    ]
+    out = run_with_rankings(
+        scheme_codes=[105],
+        registry=[Scheme(105, funds[4].fund_name, cat)],
+        eq_rankings={cat: category_ranking(funds, cat)},
+        dt_rankings={},
+    )
+    h = out["holdings"][0]
+    check("1.1 status is Weak", h["status"] == "Weak", h["status"])
+    check("1.2 action is Review", h["action"] == "Review", h["action"])
+    check("1.3 weight_pct is 100.0", h.get("scheme_code") == 105 and
+          out["decision_summary"]["Review"][0]["weight_pct"] == 100.0,
+          str(out["decision_summary"]["Review"][0].get("weight_pct")))
+    check("1.4 portfolio_status flags concentration",
+          out["portfolio_status"] == "Highly concentrated",
+          out["portfolio_status"])
+    check("1.5 alternatives are non-empty (peers materially better)",
+          len(h["alternatives"]) > 0, f"alts={len(h['alternatives'])}")
+    if h["alternatives"]:
+        first_alt = h["alternatives"][0]
+        check("1.6 first alt has metrics dict (UI-7 ready)",
+              "metrics" in first_alt and isinstance(first_alt["metrics"], dict))
+        check("1.7 justification carries magnitude",
+              all("magnitude" in j and j["magnitude"] in {"small", "moderate", "large"}
+                  for j in first_alt["justification"]))
+
+
+def scenario_all_weak() -> None:
+    banner("SCENARIO 2: All-Weak portfolio (every holding ranks bottom)")
+    cats = [
+        ("Equity Scheme - Large Cap Fund", "Nifty 100"),
+        ("Equity Scheme - Mid Cap Fund", "Nifty Midcap 150"),
+        ("Equity Scheme - Small Cap Fund", "Nifty Smallcap 250"),
+    ]
+    eq_rankings = {}
+    registry = []
+    held_codes = []
+    for i, (cat, bench) in enumerate(cats):
+        # 5 funds; held is rank 5 (Weak)
+        funds = [
+            F(100 * (i + 1) + j, excess_return_pct=4.0 - j,
+              consistency_pct=70 - j * 8,
+              max_drawdown_pct=-12 - j * 2,
+              volatility_pct=10 + j)
+            for j in range(5)
+        ]
+        # Make the bottom fund clearly weaker so peers materially dominate.
+        funds[4] = F(100 * (i + 1) + 4,
+                     excess_return_pct=-3.0,
+                     consistency_pct=15,
+                     max_drawdown_pct=-30,
+                     volatility_pct=22)
+        eq_rankings[cat] = category_ranking(funds, cat, bench)
+        held_codes.append(funds[4].scheme_code)
+        registry.append(Scheme(funds[4].scheme_code, funds[4].fund_name, cat))
+
+    weights = {held_codes[0]: 0.5, held_codes[1]: 0.3, held_codes[2]: 0.2}
+    out = run_with_rankings(held_codes, registry, eq_rankings, {}, weights=weights)
+
+    review_items = out["decision_summary"]["Review"]
+    check("2.1 all holdings in Review", len(review_items) == 3, str(len(review_items)))
+    review_weights = [it["weight_pct"] for it in review_items]
+    check("2.2 review entries sorted by weight desc",
+          review_weights == sorted(review_weights, reverse=True), str(review_weights))
+    check("2.3 review bucket total is 100%",
+          out["decision_summary_weight_pct"]["Review"] == 100.0,
+          str(out["decision_summary_weight_pct"]["Review"]))
+    # Each holding should have alternatives because peers are materially better.
+    for h in out["holdings"]:
+        check(f"2.4 [{h['scheme_code']}] alts non-empty",
+              len(h["alternatives"]) > 0, f"alts={len(h['alternatives'])}")
+        # Make sure no Low-conf fund leaks into alternatives.
+        check(f"2.5 [{h['scheme_code']}] no Low-conf alt",
+              all(a["confidence_level"] != "Low" for a in h["alternatives"]))
+
+
+def scenario_all_low_confidence() -> None:
+    banner("SCENARIO 3: All-Low-confidence portfolio (every fund <5y history)")
+    cat = "Equity Scheme - Mid Cap Fund"
+    # Every fund: 3-year history → confidence_level becomes "Low"
+    funds = [
+        F(200 + i, excess_return_pct=3.0 - i, consistency_pct=60 - i * 5,
+          max_drawdown_pct=-15 - i, volatility_pct=12 + i, history_years=3.0)
+        for i in range(5)
+    ]
+    eq_rankings = {cat: category_ranking(funds, cat)}
+    registry = [Scheme(funds[0].scheme_code, funds[0].fund_name, cat),
+                Scheme(funds[1].scheme_code, funds[1].fund_name, cat)]
+
+    out = run_with_rankings(
+        scheme_codes=[funds[0].scheme_code, funds[1].scheme_code],
+        registry=registry, eq_rankings=eq_rankings, dt_rankings={},
+    )
+    # Strong should be downgraded to Neutral when conf is Low (existing safety)
+    statuses = [h["status"] for h in out["holdings"]]
+    check("3.1 no Strong status when all peers Low-conf",
+          "Strong" not in statuses, str(statuses))
+    # Alternatives should NOT include Low-conf peers — so all alts blocks empty
+    for h in out["holdings"]:
+        check(f"3.2 [{h['scheme_code']}] alts empty (every peer is Low-conf)",
+              len(h["alternatives"]) == 0,
+              f"alts={[a['scheme_code'] for a in h['alternatives']]}")
+
+
+def scenario_etf() -> None:
+    banner("SCENARIO 4: ETF holding (unsupported asset)")
+    registry = [Scheme(300, "Some Index ETF Direct - Growth",
+                       "Other Scheme - Index Funds")]
+    out = run_with_rankings(
+        scheme_codes=[300], registry=registry,
+        eq_rankings={}, dt_rankings={},
+    )
+    h = out["holdings"][0]
+    check("4.1 ETF status is Not Ranked", h["status"] == "Not Ranked", h["status"])
+    check("4.2 ETF action is Monitor", h["action"] == "Monitor", h["action"])
+    check("4.3 ETF action_note mentions ETF",
+          "etf" in (h["action_note"] or "").lower(), h["action_note"])
+    check("4.4 ETF has zero alternatives", len(h["alternatives"]) == 0,
+          str(len(h["alternatives"])))
+
+
+def scenario_marginal_no_alts() -> None:
+    banner("SCENARIO 5: Held + 4 marginally-better peers → gate drops all")
+    cat = "Equity Scheme - Flexi Cap Fund"
+    held = F(401, excess_return_pct=2.0, consistency_pct=50,
+             max_drawdown_pct=-20, volatility_pct=15)
+    peers = [
+        F(402, excess_return_pct=2.5, consistency_pct=52,
+          max_drawdown_pct=-19, volatility_pct=14.5),
+        F(403, excess_return_pct=2.3, consistency_pct=51,
+          max_drawdown_pct=-19.5, volatility_pct=14.7),
+        F(404, excess_return_pct=2.1, consistency_pct=50.5,
+          max_drawdown_pct=-19.8, volatility_pct=14.9),
+        F(405, excess_return_pct=2.05, consistency_pct=50.2,
+          max_drawdown_pct=-19.9, volatility_pct=14.95),
+    ]
+    funds_in_order = peers + [held]  # held is last → status Weak
+    eq_rankings = {cat: category_ranking(funds_in_order, cat)}
+    out = run_with_rankings(
+        scheme_codes=[401],
+        registry=[Scheme(401, held.fund_name, cat)],
+        eq_rankings=eq_rankings, dt_rankings={},
+    )
+    h = out["holdings"][0]
+    check("5.1 status Weak", h["status"] == "Weak", h["status"])
+    check("5.2 alternatives empty (gate drops marginal peers)",
+          len(h["alternatives"]) == 0,
+          f"alts={[a['scheme_code'] for a in h['alternatives']]}")
+    check("5.3 action_note explains no comparison peer",
+          "no reliable comparison peer" in (h["action_note"] or "").lower(),
+          h["action_note"])
+
+
+def scenario_magnitude_calibration() -> None:
+    banner("SCENARIO 6: Magnitude labels match metric deltas")
+    cat = "Equity Scheme - Large Cap Fund"
+    held = F(501, excess_return_pct=1.0, consistency_pct=50,
+             max_drawdown_pct=-15, volatility_pct=12)
+    # Large-magnitude alt: well above all "large" thresholds
+    big_alt = F(502, excess_return_pct=5.0, consistency_pct=80,
+                max_drawdown_pct=-5, volatility_pct=8)
+    # Moderate-magnitude alt: just above "moderate", below "large"
+    mod_alt = F(503, excess_return_pct=2.7, consistency_pct=62,
+                max_drawdown_pct=-9, volatility_pct=10)
+    # Small-magnitude alt: just above 0 but below "moderate"
+    small_alt = F(504, excess_return_pct=1.5, consistency_pct=55,
+                  max_drawdown_pct=-13, volatility_pct=11.5)
+    funds_in_order = [big_alt, mod_alt, small_alt, held,
+                      F(505, excess_return_pct=-2, consistency_pct=20,
+                        max_drawdown_pct=-30, volatility_pct=22)]
+    eq_rankings = {cat: category_ranking(funds_in_order, cat)}
+    out = run_with_rankings(
+        scheme_codes=[501],
+        registry=[Scheme(501, held.fund_name, cat)],
+        eq_rankings=eq_rankings, dt_rankings={},
+    )
+    h = out["holdings"][0]
+    by_code = {a["scheme_code"]: a for a in h["alternatives"]}
+
+    # Big alt: at least one "large" magnitude bullet
+    if 502 in by_code:
+        big_mags = {j["magnitude"] for j in by_code[502]["justification"]}
+        check("6.1 big_alt produces 'large' magnitude bullets",
+              "large" in big_mags, str(big_mags))
+    # Moderate alt: should have at least one moderate, no "large" required
+    if 503 in by_code:
+        mod_mags = {j["magnitude"] for j in by_code[503]["justification"]}
+        check("6.2 mod_alt produces 'moderate' magnitude bullets",
+              "moderate" in mod_mags or "large" in mod_mags, str(mod_mags))
+    # Small alt: gate may filter it; if surfaced, should not advertise "large"
+    if 504 in by_code:
+        sm_mags = {j["magnitude"] for j in by_code[504]["justification"]}
+        check("6.3 small_alt does NOT advertise 'large'",
+              "large" not in sm_mags, str(sm_mags))
+    else:
+        # Acceptable: gate dropped it because no moderate+ improvement
+        check("6.3 small_alt filtered out by gate (acceptable)", True, "filtered")
+
+
+def scenario_mixed_categories_and_concentration() -> None:
+    banner("SCENARIO 7: Mixed equity+debt portfolio with concentration")
+    eq_cat = "Equity Scheme - Large Cap Fund"
+    dt_cat = "Debt Scheme - Short Duration Fund"
+    eq_funds = [
+        F(601 + i, excess_return_pct=4 - i, consistency_pct=70 - i * 8,
+          max_drawdown_pct=-12 - i, volatility_pct=10 + i)
+        for i in range(5)
+    ]
+    dt_funds = [
+        F(701 + i, fund_cagr_pct=8 - i * 0.3, volatility_pct=2 + i * 0.5,
+          max_drawdown_pct=-1 - i * 0.5, consistency_pct=80 - i * 5)
+        for i in range(5)
+    ]
+    eq_rankings = {eq_cat: category_ranking(eq_funds, eq_cat)}
+    dt_rankings = {dt_cat: category_ranking(dt_funds, dt_cat)}
+    registry = [
+        Scheme(eq_funds[0].scheme_code, eq_funds[0].fund_name, eq_cat),
+        Scheme(eq_funds[1].scheme_code, eq_funds[1].fund_name, eq_cat),
+        Scheme(dt_funds[0].scheme_code, dt_funds[0].fund_name, dt_cat),
+    ]
+    weights = {eq_funds[0].scheme_code: 0.5,
+               eq_funds[1].scheme_code: 0.3,
+               dt_funds[0].scheme_code: 0.2}
+    out = run_with_rankings(
+        scheme_codes=[eq_funds[0].scheme_code, eq_funds[1].scheme_code,
+                      dt_funds[0].scheme_code],
+        registry=registry, eq_rankings=eq_rankings, dt_rankings=dt_rankings,
+        weights=weights,
+    )
+    rs = out["risk_summary"]
+    check("7.1 equity_pct is 80.0", rs["equity_pct"] == 80.0, str(rs["equity_pct"]))
+    check("7.2 debt_pct is 20.0", rs["debt_pct"] == 20.0, str(rs["debt_pct"]))
+    # Risk-level table in _build_risk_summary: eq_w >= 0.80 → "High".
+    # 80% equity at the boundary is correctly "High" (not "Medium-High").
+    check("7.3 risk_level High at 80% equity",
+          rs["risk_level"] == "High", rs["risk_level"])
+    check("7.4 concentration warning for >25% Large Cap",
+          any("Large Cap" in c["category_short"] and c["weight_pct"] >= 80
+              for c in out["concentration"]),
+          str(out["concentration"]))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    scenario_single_fund()
+    scenario_all_weak()
+    scenario_all_low_confidence()
+    scenario_etf()
+    scenario_marginal_no_alts()
+    scenario_magnitude_calibration()
+    scenario_mixed_categories_and_concentration()
+
+    failed: List[Tuple[str, str]] = []
+    total = 0
+    print()
+    for entry in REPORT:
+        if "banner" in entry:
+            print(f"\n=== {entry['banner']} ===")
+            continue
+        total += 1
+        mark = "PASS" if entry["pass"] else "FAIL"
+        print(f"  [{mark}] {entry['case']}"
+              + (f"  ({entry['detail']})" if entry["detail"] else ""))
+        if not entry["pass"]:
+            failed.append((entry["case"], entry["detail"]))
+
+    print(f"\n\n{total - len(failed)}/{total} checks passed")
+    if failed:
+        print("FAILURES:")
+        for c, d in failed:
+            print(f"  - {c}: {d}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
