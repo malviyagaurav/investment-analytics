@@ -2360,7 +2360,11 @@ function renderPortfolioHealth(data) {
   insightsEl.appendChild(header);
 
   /* ═══ DECISION SUMMARY (TOP BLOCK) ═══ */
+  /* UI-1: each entry carries weight_pct from backend; sorted desc.
+     Column header shows count and bucket-level % of portfolio so the
+     user can prioritize Reviews by capital impact, not input order. */
   var ds = data.decision_summary;
+  var dsWeights = data.decision_summary_weight_pct || {};
   var dsSection = el('article', 'insight decision-summary');
   dsSection.appendChild(el('h3', 'insight-title', 'Decision Summary'));
   dsSection.appendChild(el('p', 'ds-disclaimer', 'Based on peer ranking signals \u2014 not financial advice'));
@@ -2377,11 +2381,20 @@ function renderPortfolioHealth(data) {
     var items = ds[g.key] || [];
     if (!items.length) return;
     var col = el('div', 'ds-col ' + g.cls);
-    col.appendChild(el('h4', 'ds-col-label', g.icon + ' ' + g.label + ' (' + items.length + ')'));
+    var bucketPct = dsWeights[g.key];
+    var headerText = g.icon + ' ' + g.label + ' (' + items.length;
+    if (typeof bucketPct === 'number') {
+      headerText += ' \u00B7 ' + bucketPct.toFixed(1) + '%';
+    }
+    headerText += ')';
+    col.appendChild(el('h4', 'ds-col-label', headerText));
     items.forEach(function(item) {
       var row = el('div', 'ds-item');
       var name = item.fund_name.replace(/ - Direct.*$/i, '').replace(/ Direct.*$/i, '');
       row.appendChild(el('span', 'ds-item-name', name));
+      if (typeof item.weight_pct === 'number') {
+        row.appendChild(el('span', 'ds-item-weight', item.weight_pct.toFixed(1) + '%'));
+      }
       row.appendChild(el('span', 'ds-item-cat', item.category_short));
       if (item.action_note) {
         row.appendChild(el('span', 'ds-item-note', item.action_note));
@@ -2463,11 +2476,14 @@ function renderPortfolioHealth(data) {
       issuesSection.appendChild(row);
     });
 
-    /* Exposure gaps */
+    /* Exposure gaps — UI-6 reframe: state observation + diversification
+       implication without crossing into advice. "Reduces diversification
+       breadth" is a factual property, not a recommendation. */
     data.exposure_gaps.forEach(function(g) {
       var row = el('div', 'issue-row issue-info');
       row.appendChild(el('span', 'issue-type', 'no exposure'));
-      row.appendChild(el('span', 'issue-msg', g.message));
+      var msg = g.message + ' — reduces diversification breadth across this asset class.';
+      row.appendChild(el('span', 'issue-msg', msg));
       issuesSection.appendChild(row);
     });
 
@@ -2488,18 +2504,31 @@ function renderPortfolioHealth(data) {
   holdingsHeader.appendChild(el('span', 'asset-class-subtitle', data.total_holdings + ' fund(s) evaluated'));
 
   /* ═══ #3: CONFIDENCE FILTER TOGGLE ═══ */
+  /* UI-5: defaults ON. Low-confidence results are noisier signals; safer
+     to hide by default and let the user opt into seeing them. */
   var confFilterWrap = el('label', 'health-conf-filter');
   var confCheck = document.createElement('input');
   confCheck.type = 'checkbox';
   confCheck.className = 'conf-check';
+  confCheck.checked = true;
   confFilterWrap.appendChild(confCheck);
-  confFilterWrap.appendChild(document.createTextNode(' Show only high-confidence results'));
+  var lowCount = (data.holdings || []).filter(function(h) {
+    return h.confidence_level !== 'High';
+  }).length;
+  var labelText = ' Show only high-confidence results';
+  if (lowCount > 0) {
+    labelText += ' (' + lowCount + ' hidden)';
+  }
+  confFilterWrap.appendChild(document.createTextNode(labelText));
   holdingsHeader.appendChild(confFilterWrap);
   insightsEl.appendChild(holdingsHeader);
 
   var holdingCards = [];
   data.holdings.forEach(function(h) {
     var card = renderHoldingCard(h);
+    if (h.confidence_level !== 'High') {
+      card.style.display = 'none';
+    }
     holdingCards.push({ card: card, confidence: h.confidence_level });
   });
 
@@ -2525,6 +2554,62 @@ function renderPortfolioHealth(data) {
     });
     insightsEl.appendChild(nfSection);
   }
+}
+
+/* UI-4: map action_note to a concrete next-step the user can take.
+   Returns null when the note already explains itself (e.g., the safe-
+   peer-fallback "No reliable comparison peer..." string). */
+function _notRankedGuidance(h) {
+  var note = (h.action_note || '').toLowerCase();
+  if (note.indexOf('etf') !== -1) {
+    return 'ETF / passive product. Peer-rank logic does not apply. Compare expense ratio and tracking error externally.';
+  }
+  if (note.indexOf('excluded from ranking') !== -1) {
+    return 'Sectoral or thematic fund. Peer comparison across themes is not meaningful — assess against the relevant sector benchmark, not other funds in this list.';
+  }
+  if (note.indexOf('insufficient data') !== -1 || note.indexOf('could not be ranked') !== -1) {
+    if (h.history_years && h.history_years > 0 && h.history_years < 3) {
+      return 'Fund history is shorter than 3 years. Re-evaluate after the fund has more data.';
+    }
+    return 'Not enough comparable peer data to rank. Review the fund’s absolute metrics on its own; a peer comparison will become available as more data accumulates.';
+  }
+  return null;
+}
+
+/* UI-7: side-by-side metric comparison between the held fund and an
+   alternative. Renders a compact 3-column grid (Metric / Yours / Alt).
+   Only compares the three primary metrics per asset class. Guards on
+   missing alt.metrics for backward compatibility. */
+function _renderHeldVsAltMetrics(h, a) {
+  if (!a || !a.metrics) return null;
+  var spec;
+  if (h.asset_class === 'equity') {
+    spec = [
+      { key: 'excess_return_pct', label: 'Excess Ret.', fmt: 'diff' },
+      { key: 'consistency_pct',   label: 'Consistency', fmt: 'pct' },
+      { key: 'max_drawdown_pct',  label: 'Drawdown',    fmt: 'pct' },
+    ];
+  } else {
+    spec = [
+      { key: 'cagr_pct',         label: 'CAGR',     fmt: 'pct' },
+      { key: 'volatility_pct',   label: 'Vol',      fmt: 'pct' },
+      { key: 'max_drawdown_pct', label: 'Drawdown', fmt: 'pct' },
+    ];
+  }
+  function fmt(v, kind) {
+    if (v === null || v === undefined) return '—';
+    if (kind === 'diff') return fmtDiff(v);
+    return fmtPct(v);
+  }
+  var grid = el('div', 'health-side-by-side');
+  spec.forEach(function(s) {
+    var row = el('div', 'sbs-row');
+    row.appendChild(el('span', 'sbs-label', s.label));
+    row.appendChild(el('span', 'sbs-yours', 'You: ' + fmt(h.metrics ? h.metrics[s.key] : null, s.fmt)));
+    row.appendChild(el('span', 'sbs-alt', 'Alt: ' + fmt(a.metrics[s.key], s.fmt)));
+    grid.appendChild(row);
+  });
+  return grid;
 }
 
 function _riskBar(label, pct, cls) {
@@ -2588,6 +2673,20 @@ function renderHoldingCard(h) {
   /* Action note */
   if (h.action_note) {
     card.appendChild(el('p', 'health-action-note', h.action_note));
+  }
+
+  /* ═══ UI-4: Not-Ranked / unsupported actionable guidance ═══
+     If we couldn't rank this holding, surface what the user can
+     actually do instead of leaving them with a bare "Could not be
+     ranked" line. */
+  if (h.status === 'Not Ranked') {
+    var guidance = _notRankedGuidance(h);
+    if (guidance) {
+      var guideBox = el('div', 'health-not-ranked-guide');
+      guideBox.appendChild(el('span', 'health-not-ranked-label', 'What you can do:'));
+      guideBox.appendChild(el('span', 'health-not-ranked-text', guidance));
+      card.appendChild(guideBox);
+    }
   }
 
   /* ═══ REPEATED BEHAVIORAL WARNING (Review funds only) ═══ */
@@ -2665,6 +2764,10 @@ function renderHoldingCard(h) {
   }
 
   /* Alternatives (for Weak/Neutral) with justification */
+  /* UI-7: each alt now exposes its full metric set (a.metrics) so we
+     can render a side-by-side held\u2194alt row for the three primary
+     metrics. Justification format upgraded to {reason, magnitude,
+     metric} per backend Slice 1. */
   if (h.alternatives.length) {
     var altSection = el('div', 'health-alt-section');
     altSection.appendChild(el('h4', 'health-alt-title', 'Higher-ranked in same category'));
@@ -2676,18 +2779,30 @@ function renderHoldingCard(h) {
       var confCls = a.confidence_level === 'High' ? 'conf-high' : 'conf-med';
       altRow.appendChild(el('span', 'rank-confidence ' + confCls, a.confidence_level));
       altSection.appendChild(altRow);
-      /* Justification: why this alternative ranks higher */
+      /* UI-7: side-by-side metrics row */
+      var sideBySide = _renderHeldVsAltMetrics(h, a);
+      if (sideBySide) altSection.appendChild(sideBySide);
+      /* Justification: why this alternative ranks higher (with magnitude) */
       if (a.justification && a.justification.length) {
         var justRow = el('div', 'health-just-row');
         justRow.appendChild(el('span', 'health-just-label', 'Key difference vs your fund:'));
-        a.justification.forEach(function(reason) {
-          justRow.appendChild(el('span', 'health-just-item', reason));
+        a.justification.forEach(function(j) {
+          var reasonText = (typeof j === 'string') ? j : j.reason;
+          var mag = (typeof j === 'object' && j.magnitude) ? j.magnitude : null;
+          var item = el('span', 'health-just-item', reasonText);
+          if (mag) {
+            var magCls = mag === 'large' ? 'mag-large' : mag === 'moderate' ? 'mag-moderate' : 'mag-small';
+            item.appendChild(el('span', 'health-just-mag ' + magCls, mag));
+          }
+          justRow.appendChild(item);
         });
         altSection.appendChild(justRow);
       }
     });
     altSection.appendChild(el('p', 'health-alt-disclaimer', 'Selected from same category ranking. Based on historical data only \u2014 not a recommendation to switch.'));
     altSection.appendChild(el('p', 'health-mini-warn', 'Do not pick a single fund from this list. Compare across your full portfolio.'));
+    /* UI-3: switching-cost disclosure. Static observation, no advice. */
+    altSection.appendChild(el('p', 'health-switch-cost', 'Switching may incur capital-gains tax (LTCG/STCG depending on holding period and asset class), exit load (typically 1% if redeemed within 1 year for equity), and transaction charges. Confirm specifics with your tax adviser before acting.'));
     card.appendChild(altSection);
   }
 

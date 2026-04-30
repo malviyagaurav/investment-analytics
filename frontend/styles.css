@@ -2631,3 +2631,84 @@ pre {
   margin: 4px 0;
   font-style: italic;
 }
+
+/* ═══ Slice 1 additions ═══ */
+
+/* UI-1: weight % chip on each decision-summary item */
+.ds-item-weight {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #475569;
+  background: #f1f5f9;
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
+/* UI-4: Not Ranked guidance panel */
+.health-not-ranked-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #f8fafc;
+  border-left: 3px solid #94a3b8;
+  padding: 6px 10px;
+  margin: 6px 0;
+}
+.health-not-ranked-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+}
+.health-not-ranked-text {
+  font-size: 0.78rem;
+  color: #1f2937;
+}
+
+/* UI-7: held vs alternative side-by-side metrics row */
+.health-side-by-side {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 4px 12px;
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: #fafafa;
+  border-radius: 4px;
+  font-size: 0.74rem;
+}
+.sbs-row { display: contents; }
+.sbs-label  { font-weight: 600; color: #334155; }
+.sbs-yours  { color: #475569; }
+.sbs-alt    { color: #065f46; font-weight: 500; }
+
+/* Magnitude tag on each justification bullet (data already exposed
+   by the backend; UI-2 visual treatment included so the new
+   justification shape doesn't render as raw [object Object]). */
+.health-just-mag {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 2px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.mag-large    { background: #dcfce7; color: #166534; }
+.mag-moderate { background: #fef3c7; color: #92400e; }
+.mag-small    { background: #f1f5f9; color: #64748b; }
+
+/* UI-3: switching-cost disclosure under alternatives */
+.health-switch-cost {
+  font-size: 0.68rem;
+  color: #475569;
+  background: #f8fafc;
+  border-left: 3px solid #cbd5e1;
+  padding: 4px 8px;
+  margin-top: 6px;
+  line-height: 1.4;
+}
