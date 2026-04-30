@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # - alternatives must pass _alternative_is_material gate
 PORTFOLIO_HEALTH_SCHEMA_VERSION = "v2"
 
+from backend.data_discovery.fetch import fetch_scheme_nav, _convert_nav_to_records
 from backend.data_discovery.registry import SchemeEntry, load_registry
 from backend.investment_analytics.ranking import (
     ALL_RANKABLE_CATEGORIES,
@@ -484,6 +485,115 @@ def _data_quality_flags(
     return flags
 
 
+# ── Hidden-overlap (return correlation across held funds) ─────
+
+# Threshold for flagging a pair as "high overlap". Indian large-cap
+# active funds typically run 0.93-0.97 against each other and against
+# Nifty 100; cross-category large+flexi+multi often runs 0.90+.
+# 0.85 picks up the cross-category cases where the "different category"
+# label gives a false sense of diversification, without over-firing on
+# obviously-different holdings (e.g., equity vs gilt fund typically <0.3).
+HIGH_CORRELATION_THRESHOLD = 0.85
+
+# Minimum aligned days needed for a correlation estimate to be meaningful.
+# 252 = ~1 trading year. Below that, correlation is noisy.
+MIN_CORRELATION_DAYS = 252
+
+
+def _pearson(xs: List[float], ys: List[float]) -> float:
+    """Pearson correlation. Returns 0.0 on degenerate inputs."""
+    n = len(xs)
+    if n != len(ys) or n < 2:
+        return 0.0
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    den = (sxx * syy) ** 0.5
+    if den <= 0:
+        return 0.0
+    return sxy / den
+
+
+def _correlation_pairs_from_nav(
+    nav_by_code: Dict[int, List[Dict[str, Any]]],
+    threshold: float = HIGH_CORRELATION_THRESHOLD,
+) -> List[Dict[str, Any]]:
+    """Pure function: given NAV records per scheme code, return high-
+    correlation pairs.
+
+    Aligns on common dates across ALL inputs (intersection — strict),
+    computes per-fund daily returns, then pairwise Pearson correlation.
+    Returns pairs whose correlation >= threshold, with the actual corr
+    value and number of common days so the UI can disclose both.
+    """
+    if len(nav_by_code) < 2:
+        return []
+    nav_maps: Dict[int, Dict[str, float]] = {}
+    for code, records in nav_by_code.items():
+        if not records:
+            continue
+        nav_maps[code] = {r["date"]: r["nav"] for r in records if r.get("nav", 0) > 0}
+    if len(nav_maps) < 2:
+        return []
+    common_dates_set = set.intersection(*(set(m.keys()) for m in nav_maps.values()))
+    if len(common_dates_set) < MIN_CORRELATION_DAYS:
+        return []
+    sorted_dates = sorted(common_dates_set)
+    returns_by_code: Dict[int, List[float]] = {}
+    for code, m in nav_maps.items():
+        rets: List[float] = []
+        prev = m[sorted_dates[0]]
+        for d in sorted_dates[1:]:
+            curr = m[d]
+            if prev > 0:
+                rets.append((curr / prev) - 1.0)
+            else:
+                rets.append(0.0)
+            prev = curr
+        returns_by_code[code] = rets
+    pairs: List[Dict[str, Any]] = []
+    codes = list(returns_by_code.keys())
+    for i in range(len(codes)):
+        for j in range(i + 1, len(codes)):
+            a, b = codes[i], codes[j]
+            corr = _pearson(returns_by_code[a], returns_by_code[b])
+            if corr >= threshold:
+                pairs.append({
+                    "fund_a_code": a,
+                    "fund_b_code": b,
+                    "correlation": round(corr, 3),
+                    "common_days": len(sorted_dates),
+                })
+    pairs.sort(key=lambda p: -p["correlation"])
+    return pairs
+
+
+def _compute_held_correlations(
+    scheme_codes: List[int],
+    threshold: float = HIGH_CORRELATION_THRESHOLD,
+) -> List[Dict[str, Any]]:
+    """Fetch cached NAV histories for the held funds and return the
+    pairs whose return-correlation exceeds the threshold.
+
+    Side-effect free except for cache warming via fetch_scheme_nav.
+    Errors per fund are swallowed — partial results are still useful.
+    """
+    if len(scheme_codes) < 2:
+        return []
+    nav_by_code: Dict[int, List[Dict[str, Any]]] = {}
+    for code in scheme_codes:
+        try:
+            raw = fetch_scheme_nav(code)
+            records = _convert_nav_to_records(raw.get("data", []))
+            if records:
+                nav_by_code[code] = records
+        except Exception as exc:
+            logger.warning("Correlation fetch failed for scheme %s: %s", code, exc)
+    return _correlation_pairs_from_nav(nav_by_code, threshold=threshold)
+
+
 def _outlier_flags(
     metrics: Dict[str, Any],
     peer_metrics_list: List[Dict[str, Any]],
@@ -585,6 +695,8 @@ class PortfolioHealthResult:
     risk_summary: Dict[str, Any]
     portfolio_status: str  # Well diversified / Moderately concentrated / Highly concentrated
     computed_at: str
+    correlations: List[Dict[str, Any]] = field(default_factory=list)
+    correlation_threshold: float = HIGH_CORRELATION_THRESHOLD
 
 
 # ── Core logic ─────────────────────────────────────────────────
@@ -1043,6 +1155,16 @@ def check_portfolio_health(
     redundancies = _detect_redundancy(holdings)
     exposure_gaps = _detect_exposure_gaps(holdings)
 
+    # ── Slice 2 / P3: hidden-overlap correlation across all held funds.
+    # Computed on the actual held set (not just ranked ones) so a user
+    # who holds 5 large-caps under different category labels still gets
+    # the "these aren't really diversified" signal. Only ranks-needed
+    # holdings are considered (skip ETFs / unsupported categories whose
+    # NAV fetch path may behave differently).
+    rankable_codes = [h.scheme_code for h in holdings
+                      if h.status != "Not Ranked" and h.scheme_code in code_to_scheme]
+    correlations = _compute_held_correlations(rankable_codes)
+
     _ranking_cache = {}  # clear cache
 
     # ── Portfolio status label (concentration-based) ──
@@ -1058,6 +1180,8 @@ def check_portfolio_health(
         risk_summary=risk_summary,
         portfolio_status=portfolio_status,
         computed_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        correlations=correlations,
+        correlation_threshold=HIGH_CORRELATION_THRESHOLD,
     )
 
 
@@ -1082,6 +1206,45 @@ def _portfolio_status_label(
     if mod_conc or crowded:
         return "Some concentration present"
     return "Well diversified"
+
+
+def _enrich_correlations(
+    pairs: List[Dict[str, Any]],
+    holdings: List["FundHealthResult"],
+) -> List[Dict[str, Any]]:
+    """Attach fund names + categories to each correlation pair so the UI
+    can render without a separate lookup. Drops pairs whose codes are
+    not present in `holdings` (defensive)."""
+    by_code = {h.scheme_code: h for h in holdings}
+    enriched: List[Dict[str, Any]] = []
+    for p in pairs:
+        a = by_code.get(p["fund_a_code"])
+        b = by_code.get(p["fund_b_code"])
+        if not a or not b:
+            continue
+        enriched.append({
+            "fund_a": {
+                "scheme_code": a.scheme_code,
+                "fund_name": a.fund_name,
+                "category_short": _short_category(a.category),
+            },
+            "fund_b": {
+                "scheme_code": b.scheme_code,
+                "fund_name": b.fund_name,
+                "category_short": _short_category(b.category),
+            },
+            "correlation": p["correlation"],
+            "common_days": p["common_days"],
+            "cross_category": a.category != b.category,
+            "message": (
+                "Funds move together (correlation "
+                + str(p["correlation"])
+                + (" across different categories" if a.category != b.category
+                   else " in the same category")
+                + ") — actual diversification is lower than category labels suggest"
+            ),
+        })
+    return enriched
 
 
 def _short_category(cat: str) -> str:
@@ -1239,6 +1402,8 @@ def portfolio_health_to_dict(
         "mistakes": result.mistakes,
         "redundancies": result.redundancies,
         "exposure_gaps": result.exposure_gaps,
+        "correlations": _enrich_correlations(result.correlations, result.holdings),
+        "correlation_threshold": result.correlation_threshold,
         "risk_summary": result.risk_summary,
         "portfolio_status": result.portfolio_status,
         "no_major_issues": (
@@ -1246,6 +1411,7 @@ def portfolio_health_to_dict(
             and len(result.redundancies) == 0
             and len(result.exposure_gaps) == 0
             and len(result.concentration) == 0
+            and len(result.correlations) == 0
         ),
         "data_as_of": result.computed_at[:10],
         "limitations": [

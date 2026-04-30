@@ -101,16 +101,34 @@ def run_with_rankings(scheme_codes: List[int],
                       registry: List[Scheme],
                       eq_rankings: Dict[str, CategoryRanking],
                       dt_rankings: Dict[str, CategoryRanking],
-                      weights=None) -> Dict[str, Any]:
+                      weights=None,
+                      nav_by_code=None) -> Dict[str, Any]:
     def eq_lookup(category: str, _registry_path: str):
         return eq_rankings.get(category)
 
     def dt_lookup(category: str, _registry_path: str):
         return dt_rankings.get(category)
 
+    # Always mock fetch_scheme_nav so the harness never hits the network.
+    # If `nav_by_code` is provided, return synthetic NAV for those codes;
+    # otherwise raise so the correlation wrapper records a fetch failure
+    # and returns an empty pair list (the legitimate "no NAV" path).
+    nav_by_code = nav_by_code or {}
+
+    def fake_fetch(code: int):
+        if code in nav_by_code:
+            return {"data": [{"date": r["date"], "nav": r["nav"]}
+                             for r in nav_by_code[code]]}
+        raise RuntimeError(f"no NAV for {code}")
+
+    def fake_convert(data):
+        return [{"date": d["date"], "nav": d["nav"]} for d in data]
+
     with patch.object(ph, "load_registry", return_value=registry), \
          patch.object(ph, "_get_or_rank_equity", side_effect=eq_lookup), \
-         patch.object(ph, "_get_or_rank_debt", side_effect=dt_lookup):
+         patch.object(ph, "_get_or_rank_debt", side_effect=dt_lookup), \
+         patch.object(ph, "fetch_scheme_nav", side_effect=fake_fetch), \
+         patch.object(ph, "_convert_nav_to_records", side_effect=fake_convert):
         result = ph.check_portfolio_health(
             scheme_codes=scheme_codes,
             weights=weights,
@@ -378,6 +396,78 @@ def scenario_mixed_categories_and_concentration() -> None:
           str(out["concentration"]))
 
 
+def scenario_hidden_correlation() -> None:
+    """SLICE 2 / P3: two cross-category funds whose returns correlate
+    above the threshold MUST be flagged in the response, regardless
+    of category labels."""
+    banner("SCENARIO 9: Hidden overlap across categories (P3)")
+    import random
+    from datetime import date, timedelta
+
+    def gen(seed: int, days: int = 600):
+        rng = random.Random(seed)
+        d = date(2021, 1, 1)
+        out, nav = [], 100.0
+        for _ in range(days):
+            while d.weekday() >= 5:
+                d += timedelta(days=1)
+            ret = 0.0003 + 0.01 * rng.gauss(0, 1)
+            nav = max(0.01, nav * (1 + ret))
+            out.append({"date": d.isoformat(), "nav": round(nav, 4)})
+            d += timedelta(days=1)
+        return out
+
+    def scaled(series, factor=1.0):
+        out = [{"date": series[0]["date"], "nav": series[0]["nav"]}]
+        for i in range(1, len(series)):
+            ret = (series[i]["nav"] / series[i-1]["nav"]) - 1.0
+            new_ret = factor * ret
+            out.append({"date": series[i]["date"],
+                        "nav": max(0.01, out[-1]["nav"] * (1 + new_ret))})
+        return out
+
+    # Held in two DIFFERENT categories (Large Cap and Flexi Cap), but
+    # NAV returns are identical → correlation should be ~1.0.
+    nav_a = gen(seed=901)
+    nav_b = scaled(nav_a, factor=1.0)
+    nav_by_code = {1101: nav_a, 1102: nav_b}
+
+    cat_lc = "Equity Scheme - Large Cap Fund"
+    cat_fc = "Equity Scheme - Flexi Cap Fund"
+    eq_rankings = {
+        cat_lc: category_ranking([F(1101), F(1103), F(1104), F(1105), F(1106)], cat_lc),
+        cat_fc: category_ranking([F(1102), F(1107), F(1108), F(1109), F(1110)], cat_fc),
+    }
+    registry = [
+        Scheme(1101, "Big Bank Large Cap Direct Plan - Growth", cat_lc, "AMC X"),
+        Scheme(1102, "Big Bank Flexi Cap Direct Plan - Growth", cat_fc, "AMC X"),
+    ]
+    out = run_with_rankings(
+        scheme_codes=[1101, 1102],
+        registry=registry, eq_rankings=eq_rankings, dt_rankings={},
+        nav_by_code=nav_by_code,
+    )
+    pairs = out.get("correlations", [])
+    check("9.1 high-overlap pair flagged", len(pairs) >= 1, f"pairs={len(pairs)}")
+    if pairs:
+        p = pairs[0]
+        check("9.2 correlation >= 0.85", p["correlation"] >= 0.85,
+              str(p["correlation"]))
+        check("9.3 cross_category True", p["cross_category"] is True,
+              str(p["cross_category"]))
+        check("9.4 fund_a + fund_b carry names",
+              "fund_name" in p["fund_a"] and "fund_name" in p["fund_b"])
+        check("9.5 message mentions diversification",
+              "diversification" in (p.get("message") or "").lower(),
+              p.get("message"))
+    check("9.6 correlation_threshold exposed",
+          "correlation_threshold" in out)
+    # When correlation is flagged, no_major_issues must be False.
+    check("9.7 no_major_issues becomes False with correlation flag",
+          out.get("no_major_issues") is False,
+          str(out.get("no_major_issues")))
+
+
 def scenario_neutral_comparable_peers() -> None:
     """OBS-1: Neutral holding where peers are NOT materially better must
     emit the comparable-to-peers note, not the data-limitation note."""
@@ -426,6 +516,7 @@ def main() -> int:
     scenario_magnitude_calibration()
     scenario_mixed_categories_and_concentration()
     scenario_neutral_comparable_peers()
+    scenario_hidden_correlation()
 
     failed: List[Tuple[str, str]] = []
     total = 0

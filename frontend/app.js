@@ -2445,7 +2445,8 @@ function renderPortfolioHealth(data) {
   insightsEl.appendChild(riskSection);
 
   /* ═══ PORTFOLIO ISSUES ═══ */
-  var hasIssues = (data.mistakes.length + data.redundancies.length + data.concentration.length + data.exposure_gaps.length) > 0;
+  var corrPairs = (data.correlations || []);
+  var hasIssues = (data.mistakes.length + data.redundancies.length + data.concentration.length + data.exposure_gaps.length + corrPairs.length) > 0;
   if (hasIssues) {
     var issuesSection = el('article', 'insight health-issues');
     issuesSection.appendChild(el('h3', 'insight-title', 'Portfolio Issues'));
@@ -2484,6 +2485,26 @@ function renderPortfolioHealth(data) {
       row.appendChild(el('span', 'issue-type', 'no exposure'));
       var msg = g.message + ' — reduces diversification breadth across this asset class.';
       row.appendChild(el('span', 'issue-msg', msg));
+      issuesSection.appendChild(row);
+    });
+
+    /* P3: high-correlation pairs (hidden overlap). Different category
+       labels can mask the fact that two funds move together — this
+       row surfaces the actual return correlation so the user sees
+       what category-based diversification logic missed. */
+    corrPairs.forEach(function(c) {
+      var sevCls = c.correlation >= 0.95 ? 'issue-high' :
+                   c.correlation >= 0.90 ? 'issue-moderate' : 'issue-info';
+      var row = el('div', 'issue-row ' + sevCls);
+      row.appendChild(el('span', 'issue-type', 'high overlap'));
+      var nameA = c.fund_a.fund_name.replace(/ - Direct.*$/i, '').replace(/ Direct.*$/i, '');
+      var nameB = c.fund_b.fund_name.replace(/ - Direct.*$/i, '').replace(/ Direct.*$/i, '');
+      var catNote = c.cross_category
+        ? ' [' + c.fund_a.category_short + ' ↔ ' + c.fund_b.category_short + ']'
+        : ' [same category]';
+      var corrChip = ' (ρ=' + c.correlation.toFixed(2) + ', ' + c.common_days + ' days)';
+      row.appendChild(el('span', 'issue-msg',
+        nameA + ' ↔ ' + nameB + catNote + corrChip + ' — moves together; actual diversification is lower than category labels suggest.'));
       issuesSection.appendChild(row);
     });
 
