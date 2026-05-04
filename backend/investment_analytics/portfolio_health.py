@@ -14,6 +14,7 @@ No advisory language. No BUY/SELL. Factual peer comparison only.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -731,6 +732,9 @@ class PortfolioHealthResult:
     correlations: List[Dict[str, Any]] = field(default_factory=list)
     correlation_threshold: float = HIGH_CORRELATION_THRESHOLD
     coverage: Optional[CoverageReport] = None
+    action_priority: Optional[Dict[str, Any]] = None
+    top_ranked_by_category: List[Dict[str, Any]] = field(default_factory=list)
+    plan_efficiency_flags: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ── Core logic ─────────────────────────────────────────────────
@@ -918,6 +922,9 @@ def check_portfolio_health(
     holdings: List[FundHealthResult] = []
     not_found: List[Dict[str, Any]] = []
     category_weights: Dict[str, float] = {}
+    # Snapshot of which CategoryRanking object was used for which category,
+    # so the top-ranked-per-category collector doesn't have to re-fetch.
+    rankings_by_category: Dict[str, Any] = {}
 
     for code in scheme_codes:
         scheme = code_to_scheme.get(code)
@@ -993,6 +1000,8 @@ def check_portfolio_health(
             ranking = _get_or_rank_equity(category, registry_path)
         else:
             ranking = _get_or_rank_debt(category, registry_path)
+        if ranking is not None:
+            rankings_by_category[category] = ranking
 
         if ranking is None:
             holdings.append(FundHealthResult(
@@ -1205,24 +1214,68 @@ def check_portfolio_health(
                       if h.status != "Not Ranked" and h.scheme_code in code_to_scheme]
     correlations = _compute_held_correlations(rankable_codes)
 
+    # ── Top-ranked visibility per held category (non-advisory) ──
+    # For each category the user actually holds, surface the rank-1
+    # fund's identity. Pure information ("top-ranked in category"),
+    # not a recommendation. Suppressed when coverage band == "low".
+    top_ranked_by_category = _collect_top_ranked_per_category(holdings, rankings_by_category)
+
+    # ── Direct vs Regular plan structural flag ──
+    # Detect held funds whose name lacks "Direct" — the Direct sibling
+    # of the same scheme has a structurally lower expense ratio.
+    # Surfaced as a separate signal, not as Continue/Monitor/Review.
+    plan_efficiency_flags = _detect_regular_plan_holdings(holdings, registry)
+
     _ranking_cache = {}  # clear cache
 
-    # ── Portfolio status label (concentration-based) ──
-    portfolio_status = _portfolio_status_label(concentration, mistakes, exposure_gaps)
+    # ── Portfolio status label (concentration- AND coverage-aware) ──
+    portfolio_status = _portfolio_status_label(
+        concentration, mistakes, exposure_gaps, coverage,
+    )
+
+    # ── Coverage-gated suppression (item D) ──
+    # When coverage is "low", portfolio-level conclusions are based on
+    # a minority of capital and may be misleading. Drop the conclusions
+    # rather than show possibly-misleading rows. The coverage banner
+    # already explains why.
+    if coverage and coverage.confidence_band == "low":
+        concentration_out: List[ConcentrationWarning] = []
+        redundancies_out: List[Dict[str, Any]] = []
+        exposure_gaps_out: List[Dict[str, Any]] = []
+        correlations_out: List[Dict[str, Any]] = []
+        # Keep mistakes (over-diversification, AMC concentration,
+        # category crowding) — those operate on counts, not capital
+        # share, and remain factually true regardless of coverage.
+    else:
+        # Cross-detector dedup (item C): collapse same fund-pair signals
+        # so the user sees one row per root cause rather than three.
+        redundancies_out, correlations_out, mistakes = _dedup_overlap_signals(
+            redundancies, correlations, mistakes, holdings,
+        )
+        concentration_out = concentration
+        exposure_gaps_out = exposure_gaps
+
+    # ── Action-priority headline (item A) ──
+    # One-line "address this first" picked by capital weight, then
+    # severity. Pure pointer, not a recommendation.
+    action_priority = _build_action_priority(holdings, weights or {})
 
     return PortfolioHealthResult(
         holdings=holdings,
         not_found=not_found,
-        concentration=concentration,
+        concentration=concentration_out,
         mistakes=mistakes,
-        redundancies=redundancies,
-        exposure_gaps=exposure_gaps,
+        redundancies=redundancies_out,
+        exposure_gaps=exposure_gaps_out,
         risk_summary=risk_summary,
         portfolio_status=portfolio_status,
         computed_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        correlations=correlations,
+        correlations=correlations_out,
         correlation_threshold=HIGH_CORRELATION_THRESHOLD,
         coverage=coverage,
+        action_priority=action_priority,
+        top_ranked_by_category=top_ranked_by_category,
+        plan_efficiency_flags=plan_efficiency_flags,
     )
 
 
@@ -1304,11 +1357,18 @@ def _portfolio_status_label(
     concentration: List[ConcentrationWarning],
     mistakes: List[Dict[str, Any]],
     exposure_gaps: List[Dict[str, Any]],
+    coverage: Optional[CoverageReport] = None,
 ) -> str:
     """Derive a single portfolio structure label from existing signals.
 
-    Uses only data already computed — no invented math.
+    Uses only data already computed — no invented math. When coverage
+    is low, the diversification verdict is suppressed in favour of a
+    coverage-aware label, because asserting "Well diversified" while
+    half the capital wasn't analyzed is exactly the false-confidence
+    pattern Item 1 was designed to prevent.
     """
+    if coverage and coverage.confidence_band == "low":
+        return "Coverage limited — partial diversification view"
     high_conc = any(c.weight_pct > 40 for c in concentration)
     mod_conc = any(c.weight_pct > 25 for c in concentration)
     over_div = any(m.get("type") == "over_diversification" for m in mistakes)
@@ -1320,7 +1380,266 @@ def _portfolio_status_label(
         return "Over-diversified"
     if mod_conc or crowded:
         return "Some concentration present"
+    if coverage and coverage.confidence_band == "partial":
+        return "Well diversified (partial coverage)"
     return "Well diversified"
+
+
+def _build_action_priority(
+    holdings: List[FundHealthResult],
+    weights: Dict[int, float],
+) -> Optional[Dict[str, Any]]:
+    """Pick the single highest-impact action the user should look at first.
+
+    Capital-weighted; severity tiebreaker (Review > Monitor > nothing).
+    Pure pointer — names a position the user already holds, not a fund
+    to acquire. Returns None when no Review/Monitor exists.
+    """
+    if not holdings:
+        return None
+    n = len(holdings)
+    eq_weight = 1.0 / n
+    held_codes = {h.scheme_code for h in holdings}
+    held_weight_total = sum(weights.get(c, 0) for c in held_codes) or 0.0
+    if held_weight_total > 0:
+        resolved = {c: weights.get(c, 0) / held_weight_total for c in held_codes}
+    else:
+        resolved = {c: eq_weight for c in held_codes}
+
+    # Severity rank: Review = 2, Monitor = 1, Continue = 0.
+    severity_rank = {"Review": 2, "Monitor": 1, "Continue": 0}
+    candidates = []
+    for h in holdings:
+        sev = severity_rank.get(h.action, 0)
+        if sev == 0:
+            continue
+        candidates.append((sev, resolved.get(h.scheme_code, eq_weight), h))
+    if not candidates:
+        return None
+    # Highest severity wins; within severity, highest weight wins.
+    candidates.sort(key=lambda t: (-t[0], -t[1]))
+    sev, w, h = candidates[0]
+    return {
+        "scheme_code": h.scheme_code,
+        "fund_name": h.fund_name,
+        "action": h.action,
+        "weight_pct": round(w * 100, 1),
+        "category_short": _short_category(h.category),
+        "headline": (
+            f"Address first: {h.fund_name} — {h.action} "
+            f"({round(w * 100, 1)}% of portfolio, {_short_category(h.category)})"
+        ),
+    }
+
+
+def _collect_top_ranked_per_category(
+    holdings: List[FundHealthResult],
+    rankings_by_category: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """For each category the user holds, surface the rank-1 fund's name.
+
+    Strictly informational. Limited to categories actually held — we do
+    NOT introduce categories the user doesn't own, which would cross
+    into "consider this fund" territory.
+
+    `rankings_by_category` maps category name -> CategoryRanking /
+    DebtCategoryRanking. Built by the caller from the per-holding
+    rankings that were already fetched, so this function does not
+    re-fetch.
+    """
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for h in holdings:
+        if h.status == "Not Ranked":
+            continue
+        if h.category in seen:
+            continue
+        seen.add(h.category)
+        ranking = rankings_by_category.get(h.category)
+        if not ranking or not getattr(ranking, "ranked", None):
+            continue
+        top = ranking.ranked[0]
+        if top.confidence_level == "Low":
+            continue
+        # Skip if the top-ranked is the user's own holding — saying
+        # "your fund is already top-ranked" duplicates their card.
+        held_in_cat = {x.scheme_code for x in holdings if x.category == h.category}
+        if top.fund.scheme_code in held_in_cat:
+            continue
+        out.append({
+            "category": h.category,
+            "category_short": _short_category(h.category),
+            "scheme_code": top.fund.scheme_code,
+            "fund_name": top.fund.fund_name,
+            "fund_house": top.fund.fund_house,
+            "confidence_level": top.confidence_level,
+        })
+    return out
+
+
+def _detect_regular_plan_holdings(
+    holdings: List[FundHealthResult],
+    registry: List[SchemeEntry],
+) -> List[Dict[str, Any]]:
+    """Detect held funds that are NOT Direct Plans and find the Direct sibling.
+
+    Direct Plan vs Regular Plan is a structural fact: same fund, same
+    portfolio, same returns BEFORE expenses — but Regular pays an
+    intermediary commission baked into TER. Direct typically runs
+    0.5-1.5pp/yr lower.
+
+    The flag carries the held scheme + the Direct sibling code if found.
+    Phrased as observation, not action: "Plan choice is structural,
+    distinct from peer ranking." UI surfaces this on the holding card.
+
+    Uses the registry's scheme_name (canonical AMFI label) — not
+    FundHealthResult.fund_name, which can be a downstream-derived
+    string and may not preserve the "Regular Plan" / "Direct Plan"
+    suffix verbatim.
+    """
+    flags: List[Dict[str, Any]] = []
+    by_code = {s.scheme_code: s for s in registry}
+    by_base = _build_base_name_index(registry)
+    for h in holdings:
+        scheme = by_code.get(h.scheme_code)
+        if scheme is None:
+            continue
+        name = scheme.scheme_name or ""
+        if not name:
+            continue
+        if "Direct" in name:
+            continue  # already on the efficient plan
+        base = _scheme_base_name(name).lower()
+        # Find the Direct sibling — same base name with "Direct" present.
+        sibling = None
+        for entry in by_base.get(base, []):
+            if "Direct" in entry.scheme_name and "Growth" in entry.scheme_name:
+                sibling = entry
+                break
+        flag = {
+            "scheme_code": h.scheme_code,
+            "fund_name": h.fund_name,
+            "category_short": _short_category(h.category),
+            "is_regular_plan": True,
+            "direct_sibling": (
+                None if sibling is None else {
+                    "scheme_code": sibling.scheme_code,
+                    "fund_name": sibling.scheme_name,
+                }
+            ),
+            "message": (
+                "This holding is the Regular plan. The Direct plan "
+                "variant of the same scheme has a structurally lower "
+                "expense ratio (typically 0.5-1.5 percentage points "
+                "per year). Plan choice is structural, distinct from "
+                "peer ranking."
+            ),
+        }
+        flags.append(flag)
+    return flags
+
+
+def _build_base_name_index(
+    registry: List[SchemeEntry],
+) -> Dict[str, List[SchemeEntry]]:
+    """Group registry entries by their base name (plan/option suffixes
+    stripped) for Direct/Regular sibling lookup."""
+    index: Dict[str, List[SchemeEntry]] = {}
+    for entry in registry:
+        base = _scheme_base_name(entry.scheme_name).lower()
+        index.setdefault(base, []).append(entry)
+    return index
+
+
+_VARIANT_SUFFIXES_RE = re.compile(
+    r"\s*-?\s*(?:Direct|Regular)\s*Plan\s*-?\s*(?:Growth|Dividend|IDCW|Payout|Reinvestment)?.*$",
+    re.IGNORECASE,
+)
+
+
+def _scheme_base_name(name: str) -> str:
+    """Strip "Direct/Regular Plan - Growth/Dividend/..." suffixes so two
+    variants of the same scheme map to the same key."""
+    return _VARIANT_SUFFIXES_RE.sub("", name).strip()
+
+
+def _dedup_overlap_signals(
+    redundancies: List[Dict[str, Any]],
+    correlations: List[Dict[str, Any]],
+    mistakes: List[Dict[str, Any]],
+    holdings: List[FundHealthResult],
+) -> tuple:
+    """Collapse signals that describe the same root cause (same fund pair
+    or same category) into one row.
+
+    A redundancy + a correlation + a category_crowding entry can all be
+    triggered by the same two funds in the same category. Showing all
+    three is noise, not insight.
+    """
+    # Build a key for each redundancy + correlation: ordered fund-code pair.
+    def _pair_key(a: int, b: int) -> tuple:
+        return (a, b) if a < b else (b, a)
+
+    correlated_pairs = {
+        _pair_key(c["fund_a_code"], c["fund_b_code"]): c
+        for c in correlations
+    }
+    deduped_redundancies: List[Dict[str, Any]] = []
+    for r in redundancies:
+        key = _pair_key(r["fund_a"]["scheme_code"], r["fund_b"]["scheme_code"])
+        if key in correlated_pairs:
+            # Correlation is a stronger signal (return-based) than
+            # metric-similarity redundancy — drop the redundancy row.
+            continue
+        deduped_redundancies.append(r)
+
+    # category_crowding: if every fund in the crowded category is part of
+    # a flagged correlation pair, the crowding row is redundant with the
+    # correlation rows. Otherwise keep it.
+    by_cat: Dict[str, List[FundHealthResult]] = {}
+    for h in holdings:
+        by_cat.setdefault(h.category, []).append(h)
+    cat_codes_in_corr: Dict[str, set] = {}
+    for c in correlations:
+        a_code = c["fund_a_code"]
+        b_code = c["fund_b_code"]
+        for h in holdings:
+            if h.scheme_code in (a_code, b_code):
+                cat_codes_in_corr.setdefault(h.category, set()).add(h.scheme_code)
+
+    deduped_mistakes: List[Dict[str, Any]] = []
+    for m in mistakes:
+        if m.get("type") == "category_crowding":
+            cat = m.get("category") or ""
+            cat_holdings = by_cat.get(cat, [])
+            corr_codes = cat_codes_in_corr.get(cat, set())
+            cat_codes = {h.scheme_code for h in cat_holdings}
+            if cat_codes and cat_codes.issubset(corr_codes):
+                # Every crowded fund is already in a correlation row.
+                continue
+        deduped_mistakes.append(m)
+
+    return deduped_redundancies, correlations, deduped_mistakes
+
+
+def _filter_top_ranked_by_coverage(
+    rows: List[Dict[str, Any]],
+    coverage: Optional[CoverageReport],
+) -> List[Dict[str, Any]]:
+    """Suppress top-ranked visibility entirely when coverage is low —
+    declaring 'top-ranked in your categories' on the back of a minority
+    of capital is the false-confidence pattern Item 1 was meant to stop.
+    Tag with a partial-coverage note when band is partial."""
+    if not rows:
+        return []
+    if coverage and coverage.confidence_band == "low":
+        return []
+    if coverage and coverage.confidence_band == "partial":
+        return [
+            {**r, "coverage_note": "based on partial portfolio coverage"}
+            for r in rows
+        ]
+    return rows
 
 
 def _enrich_correlations(
@@ -1530,6 +1849,11 @@ def portfolio_health_to_dict(
                 "affected_metrics": result.coverage.affected_metrics,
             }
         ),
+        "action_priority": result.action_priority,
+        "top_ranked_by_category": _filter_top_ranked_by_coverage(
+            result.top_ranked_by_category, result.coverage,
+        ),
+        "plan_efficiency_flags": result.plan_efficiency_flags,
         "risk_summary": result.risk_summary,
         "portfolio_status": result.portfolio_status,
         "no_major_issues": (

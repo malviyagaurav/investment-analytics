@@ -2713,6 +2713,84 @@ pre {
   line-height: 1.4;
 }
 
+/* Action-priority headline (item A) — single highest-impact action */
+.health-action-priority {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(90deg, #fef3c7 0%, #fffbeb 100%);
+  border-left: 4px solid #d97706;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #92400e;
+}
+.ap-icon { font-size: 1rem; }
+.ap-headline { color: #1f2937; }
+
+/* Top-ranked per held category (non-advisory) */
+.health-top-ranked { padding: 12px 14px; }
+.health-top-ranked .tr-disclaimer {
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-style: italic;
+  margin: 4px 0 8px;
+}
+.tr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+.tr-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border-radius: 4px;
+  border-left: 3px solid #94a3b8;
+}
+.tr-cat {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+}
+.tr-name { font-weight: 600; font-size: 0.85rem; color: #1f2937; }
+.tr-house { font-size: 0.74rem; color: var(--muted); }
+.tr-coverage-note {
+  font-size: 0.65rem;
+  font-style: italic;
+  color: #92400e;
+  margin-top: 4px;
+}
+
+/* Plan-efficiency flag (item 4): Regular vs Direct */
+.health-plan-flag {
+  background: #fef9c3;
+  border-left: 3px solid #ca8a04;
+  padding: 8px 10px;
+  margin: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.pf-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #854d0e;
+}
+.pf-text { font-size: 0.78rem; color: #1f2937; line-height: 1.4; }
+.pf-sibling {
+  font-size: 0.72rem;
+  color: #475569;
+  font-style: italic;
+}
+
 /* Coverage Integrity Layer (Item 1) — banner above conclusions */
 .health-coverage {
   border-left-width: 4px;

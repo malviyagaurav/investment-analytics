@@ -549,5 +549,176 @@ class CoverageIntegrityTests(unittest.TestCase):
         self.assertIn("affected_metrics", cov)
 
 
+class CompressionLayerTests(unittest.TestCase):
+    """A/B/C/D + top-ranked + Direct/Regular: signals are compressed,
+    not advisory; overlapping signals dedup; low coverage suppresses
+    portfolio-level conclusions."""
+
+    def _ranking(self, cat="Equity Scheme - Large Cap Fund"):
+        funds = [
+            _make_fund(2001, vol=11, dd=-12, cons=70, ret=4.0),
+            _make_fund(2002, vol=12, dd=-13, cons=65, ret=3.0),
+            _make_fund(2003, vol=13, dd=-14, cons=58, ret=2.0),
+            _make_fund(2004, vol=14, dd=-15, cons=55, ret=1.5),
+            _make_fund(2005, vol=20, dd=-30, cons=20, ret=-2.0),
+        ]
+        ranked = [
+            RankedFund(rank=i + 1, fund=f, dominance_count=4 - i, total_peers=5,
+                       confidence_level="High", strengths=[], weaknesses=[])
+            for i, f in enumerate(funds)
+        ]
+        return CategoryRanking(
+            category=cat, benchmark_name="Nifty 100", benchmark_code=999,
+            benchmark_fallback=False, ranked=ranked, excluded=[],
+            computed_at="2026-04-30T00:00:00+00:00", total_funds_in_category=5,
+        )
+
+    def _run(self, scheme_codes, registry, weights=None):
+        ranking = self._ranking()
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None), \
+             patch.object(ph, "fetch_scheme_nav",
+                          side_effect=RuntimeError("no NAV in test")):
+            result = ph.check_portfolio_health(
+                scheme_codes=scheme_codes, weights=weights,
+                registry_path="ignored",
+            )
+        out = ph.portfolio_health_to_dict(result, weights=weights)
+        return result, out
+
+    def test_action_priority_picks_highest_weight_review(self) -> None:
+        """A: heaviest Review wins, with severity tiebreaker over Monitor."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X"),  # Strong
+            _Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC Y"),  # Neutral
+            _Scheme(2005, "Weak Direct Plan - Growth", cat, "AMC Z"),  # Weak
+        ]
+        # Tiny Weak holding (10%), big Neutral (60%), small Strong (30%).
+        # Severity wins: Weak Review picked even though Neutral has more weight.
+        weights = {2001: 0.30, 2003: 0.60, 2005: 0.10}
+        _, out = self._run([2001, 2003, 2005], registry, weights=weights)
+        ap = out["action_priority"]
+        self.assertIsNotNone(ap)
+        self.assertEqual(ap["scheme_code"], 2005)  # the Review wins by severity
+        self.assertEqual(ap["action"], "Review")
+        self.assertIn("Address first:", ap["headline"])
+
+    def test_action_priority_falls_back_to_heaviest_monitor(self) -> None:
+        """If no Review exists, pick the heaviest Monitor."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC Y"),
+        ]
+        weights = {2001: 0.40, 2003: 0.60}  # 2003 (Neutral) is bigger
+        _, out = self._run([2001, 2003], registry, weights=weights)
+        ap = out["action_priority"]
+        self.assertEqual(ap["action"], "Monitor")
+        self.assertEqual(ap["scheme_code"], 2003)
+
+    def test_action_priority_none_when_all_continue(self) -> None:
+        """All Strong/Continue → no priority headline (nothing to do)."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [_Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X")]
+        _, out = self._run([2001], registry)
+        self.assertIsNone(out["action_priority"])
+
+    def test_portfolio_status_downgrades_under_low_coverage(self) -> None:
+        """B: low coverage forces a coverage-aware label, suppressing
+        'Well diversified' when half the portfolio wasn't analyzed."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(8888, "ETF Direct - Growth",
+                    "Other Scheme - Index Funds", "AMC Y"),
+        ]
+        weights = {2001: 0.30, 8888: 0.70}  # 30% ranked → low band
+        _, out = self._run([2001, 8888], registry, weights=weights)
+        self.assertEqual(out["coverage"]["confidence_band"], "low")
+        self.assertIn("Coverage limited", out["portfolio_status"])
+
+    def test_portfolio_conclusions_suppressed_under_low_coverage(self) -> None:
+        """D: under low coverage, concentration/redundancy/correlation/
+        exposure_gaps are suppressed — banner explains why."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(8888, "ETF Direct - Growth",
+                    "Other Scheme - Index Funds", "AMC Y"),
+        ]
+        weights = {2001: 0.30, 8888: 0.70}
+        _, out = self._run([2001, 8888], registry, weights=weights)
+        self.assertEqual(out["concentration"], [])
+        self.assertEqual(out["redundancies"], [])
+        self.assertEqual(out["correlations"], [])
+        self.assertEqual(out["exposure_gaps"], [])
+        # Top-ranked also suppressed under low coverage.
+        self.assertEqual(out["top_ranked_by_category"], [])
+
+    def test_top_ranked_per_held_category_non_advisory(self) -> None:
+        """E: rank-1 fund per held category surfaces — but only for
+        categories the user already holds, never new ones."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [_Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC X")]
+        _, out = self._run([2003], registry)
+        rows = out["top_ranked_by_category"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["category"], cat)
+        self.assertEqual(rows[0]["scheme_code"], 2001)  # rank 1
+        # Held fund is rank 3; top-ranked is different fund.
+        self.assertNotEqual(rows[0]["scheme_code"], 2003)
+
+    def test_top_ranked_skipped_when_user_already_holds_top(self) -> None:
+        """If the held fund IS already the top-ranked in its category,
+        we don't duplicate the card via top_ranked_by_category."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [_Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X")]
+        _, out = self._run([2001], registry)
+        self.assertEqual(out["top_ranked_by_category"], [])
+
+    def test_regular_plan_detected_with_direct_sibling(self) -> None:
+        """F: a Regular Plan holding is flagged with the Direct sibling's code."""
+        cat = "Equity Scheme - Large Cap Fund"
+        # Registry contains BOTH variants of the same scheme so the
+        # base-name matcher can find the Direct sibling.
+        registry = [
+            _Scheme(3001, "Acme Bluechip Regular Plan - Growth", cat, "Acme MF"),
+            _Scheme(3002, "Acme Bluechip Direct Plan - Growth", cat, "Acme MF"),
+            _Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC Y"),
+        ]
+        _, out = self._run([3001, 2003], registry)
+        flags = out["plan_efficiency_flags"]
+        self.assertEqual(len(flags), 1)
+        f = flags[0]
+        self.assertEqual(f["scheme_code"], 3001)
+        self.assertTrue(f["is_regular_plan"])
+        self.assertIsNotNone(f["direct_sibling"])
+        self.assertEqual(f["direct_sibling"]["scheme_code"], 3002)
+        self.assertIn("Plan choice is structural", f["message"])
+        # No advisory verbs.
+        for forbidden in ["should", "buy", "sell", "switch", "best", "recommend"]:
+            self.assertNotIn(forbidden, f["message"].lower())
+
+    def test_regular_plan_detected_without_direct_sibling(self) -> None:
+        """If no Direct sibling exists in the registry, we still flag
+        the Regular plan but direct_sibling is None."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(3001, "Acme Bluechip Regular Plan - Growth", cat, "Acme MF"),
+        ]
+        _, out = self._run([3001], registry)
+        flags = out["plan_efficiency_flags"]
+        self.assertEqual(len(flags), 1)
+        self.assertIsNone(flags[0]["direct_sibling"])
+
+    def test_direct_plan_holdings_not_flagged(self) -> None:
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [_Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X")]
+        _, out = self._run([2001], registry)
+        self.assertEqual(out["plan_efficiency_flags"], [])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

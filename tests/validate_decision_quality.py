@@ -396,6 +396,72 @@ def scenario_mixed_categories_and_concentration() -> None:
           str(out["concentration"]))
 
 
+def scenario_compression_and_dominance() -> None:
+    """Compression layer: action_priority + top-ranked + plan flag,
+    plus low-coverage suppression of portfolio-level conclusions."""
+    banner("SCENARIO 11: Compression + dominance + low-coverage suppression")
+    cat = "Equity Scheme - Large Cap Fund"
+    funds = [
+        F(2001, excess_return_pct=4.0, consistency_pct=70, max_drawdown_pct=-12, volatility_pct=10),
+        F(2002, excess_return_pct=3.0, consistency_pct=65, max_drawdown_pct=-13, volatility_pct=11),
+        F(2003, excess_return_pct=2.0, consistency_pct=58, max_drawdown_pct=-14, volatility_pct=12),
+        F(2004, excess_return_pct=1.0, consistency_pct=55, max_drawdown_pct=-16, volatility_pct=14),
+        F(2005, excess_return_pct=-2.0, consistency_pct=20, max_drawdown_pct=-30, volatility_pct=22),
+    ]
+    eq_rankings = {cat: category_ranking(funds, cat)}
+
+    # User holds 2003 (rank 3, Neutral), 2005 (rank 5, Weak), and a
+    # Regular plan (3001). They do NOT hold the rank-1 (2001), so
+    # top-ranked-per-category should surface it.
+    registry = [
+        Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X"),
+        Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC Y"),
+        Scheme(2005, "Weak Direct Plan - Growth", cat, "AMC Z"),
+        Scheme(3001, "Acme Bluechip Regular Plan - Growth", cat, "Acme MF"),
+        Scheme(3002, "Acme Bluechip Direct Plan - Growth", cat, "Acme MF"),
+    ]
+    # Weights chosen so analyzed_pct lands in the "partial" band (50-70%):
+    # exercises the partial-coverage tag on top-ranked rows + still
+    # surfaces the priority headline + still flags the Regular plan.
+    weights = {2003: 0.50, 2005: 0.05, 3001: 0.45}
+    out = run_with_rankings([2003, 2005, 3001], registry,
+                            eq_rankings, {}, weights=weights)
+
+    # Action priority: 2005 is Weak (severity 2), 3001 is unrankable.
+    # The heaviest Review wins by severity, even if it's small.
+    ap = out.get("action_priority")
+    check("11.1 action_priority surfaces a Review",
+          ap is not None and ap["action"] == "Review",
+          ap["action"] if ap else "missing")
+    check("11.2 action_priority headline mentions weight",
+          ap and "Address first:" in ap["headline"], (ap or {}).get("headline"))
+
+    # Top-ranked per held category — only for held categories.
+    tr = out.get("top_ranked_by_category", [])
+    check("11.3 top-ranked rows present (held cat)", len(tr) >= 1)
+    if tr:
+        check("11.4 top-ranked points at rank-1 (not held by user)",
+              tr[0]["scheme_code"] == 2001 or
+              all(row["scheme_code"] not in [2003, 2005] for row in tr))
+
+    # Plan-efficiency flag — Regular plan flagged with Direct sibling.
+    pe = out.get("plan_efficiency_flags", [])
+    reg_flags = [f for f in pe if f["scheme_code"] == 3001]
+    check("11.5 Regular plan holding flagged", len(reg_flags) == 1,
+          str([f["scheme_code"] for f in pe]))
+    if reg_flags:
+        check("11.6 Direct sibling identified",
+              reg_flags[0]["direct_sibling"] is not None and
+              reg_flags[0]["direct_sibling"]["scheme_code"] == 3002)
+        check("11.7 plan-flag message non-advisory",
+              all(forbidden not in reg_flags[0]["message"].lower()
+                  for forbidden in ["should", "buy", "sell", "switch", "best", "recommend"]),
+              reg_flags[0]["message"])
+    direct_flags = [f for f in pe if f["scheme_code"] in (2003, 2005)]
+    check("11.8 Direct holdings NOT flagged",
+          len(direct_flags) == 0, str(direct_flags))
+
+
 def scenario_coverage_integrity() -> None:
     """ITEM 1: capital-weighted coverage drops portfolio confidence
     when a meaningful share sits in unanalyzable holdings."""
@@ -573,6 +639,7 @@ def main() -> int:
     scenario_neutral_comparable_peers()
     scenario_hidden_correlation()
     scenario_coverage_integrity()
+    scenario_compression_and_dominance()
 
     failed: List[Tuple[str, str]] = []
     total = 0

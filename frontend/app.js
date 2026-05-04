@@ -2379,6 +2379,17 @@ function renderPortfolioHealth(data) {
   if (lims) header.appendChild(lims);
   insightsEl.appendChild(header);
 
+  /* ═══ ACTION-PRIORITY HEADLINE (item A) ═══
+     One-line "address this first" picked by capital weight + severity
+     in the backend. Pure pointer to a position the user already
+     holds — not a recommendation. */
+  if (data.action_priority) {
+    var apBox = el('article', 'insight health-action-priority');
+    apBox.appendChild(el('span', 'ap-icon', '➤'));
+    apBox.appendChild(el('span', 'ap-headline', data.action_priority.headline));
+    insightsEl.appendChild(apBox);
+  }
+
   /* ═══ DECISION SUMMARY (TOP BLOCK) ═══ */
   /* UI-1: each entry carries weight_pct from backend; sorted desc.
      Column header shows count and bucket-level % of portfolio so the
@@ -2428,6 +2439,35 @@ function renderPortfolioHealth(data) {
   /* ═══ BEHAVIORAL WARNING ═══ */
   dsSection.appendChild(el('p', 'health-behavior-warn', '\u26A0 Do not base decisions on a single fund. Review across categories and time horizon.'));
   insightsEl.appendChild(dsSection);
+
+  /* ═══ TOP-RANKED PER HELD CATEGORY (non-advisory) ═══
+     Small panel listing the rank-1 fund in each category the user
+     ALREADY holds — strictly informational. Suppressed entirely when
+     coverage band is "low" (filter applied server-side). Carries a
+     partial-coverage tag when band is "partial". */
+  if (data.top_ranked_by_category && data.top_ranked_by_category.length) {
+    var trSection = el('article', 'insight health-top-ranked');
+    trSection.appendChild(el('h3', 'insight-title', 'Top-ranked in your categories'));
+    trSection.appendChild(el('p', 'tr-disclaimer',
+      'Based on current peer ranking. Shown for context only — not a recommendation to switch.'));
+    var trGrid = el('div', 'tr-grid');
+    data.top_ranked_by_category.forEach(function(row) {
+      var card = el('div', 'tr-card');
+      card.appendChild(el('span', 'tr-cat', row.category_short));
+      var cleanName = row.fund_name.replace(/ - Direct.*$/i, '').replace(/ Direct.*$/i, '');
+      card.appendChild(el('span', 'tr-name', cleanName));
+      card.appendChild(el('span', 'tr-house', row.fund_house));
+      var conf = row.confidence_level;
+      var confCls = conf === 'High' ? 'conf-high' : conf === 'Medium' ? 'conf-med' : 'conf-low';
+      card.appendChild(el('span', 'rank-confidence ' + confCls, conf));
+      if (row.coverage_note) {
+        card.appendChild(el('span', 'tr-coverage-note', row.coverage_note));
+      }
+      trGrid.appendChild(card);
+    });
+    trSection.appendChild(trGrid);
+    insightsEl.appendChild(trSection);
+  }
 
   /* Risk Summary */
   var rs = data.risk_summary;
@@ -2564,9 +2604,16 @@ function renderPortfolioHealth(data) {
   holdingsHeader.appendChild(confFilterWrap);
   insightsEl.appendChild(holdingsHeader);
 
+  /* Build a code→plan-efficiency-flag map so renderHoldingCard can
+     attach the structural Direct/Regular flag (Item 4). */
+  var planFlagByCode = {};
+  (data.plan_efficiency_flags || []).forEach(function(f) {
+    planFlagByCode[f.scheme_code] = f;
+  });
+
   var holdingCards = [];
   data.holdings.forEach(function(h) {
-    var card = renderHoldingCard(h);
+    var card = renderHoldingCard(h, planFlagByCode[h.scheme_code]);
     if (h.confidence_level !== 'High') {
       card.style.display = 'none';
     }
@@ -2664,7 +2711,7 @@ function _riskBar(label, pct, cls) {
   return wrap;
 }
 
-function renderHoldingCard(h) {
+function renderHoldingCard(h, planFlag) {
   var statusCls = h.status === 'Strong' ? 'status-strong' : h.status === 'Weak' ? 'status-weak' : h.status === 'Neutral' ? 'status-neutral' : 'status-nr';
   var actionCls = h.action === 'Continue' ? 'action-continue' : h.action === 'Review' ? 'action-review' : 'action-monitor';
   var card = el('article', 'insight health-card health-card-' + statusCls);
@@ -2714,6 +2761,21 @@ function renderHoldingCard(h) {
   /* Action note */
   if (h.action_note) {
     card.appendChild(el('p', 'health-action-note', h.action_note));
+  }
+
+  /* ═══ Direct vs Regular plan structural flag (Item 4) ═══
+     Surfaced as a separate signal — does NOT override the
+     Continue/Monitor/Review axis. Pure observation, not advice. */
+  if (planFlag && planFlag.is_regular_plan) {
+    var pfBox = el('div', 'health-plan-flag');
+    pfBox.appendChild(el('span', 'pf-label', 'Plan structure'));
+    pfBox.appendChild(el('span', 'pf-text', planFlag.message));
+    if (planFlag.direct_sibling) {
+      pfBox.appendChild(el('span', 'pf-sibling',
+        'Direct sibling: ' + planFlag.direct_sibling.fund_name +
+        ' (scheme code ' + planFlag.direct_sibling.scheme_code + ')'));
+    }
+    card.appendChild(pfBox);
   }
 
   /* ═══ UI-4: Not-Ranked / unsupported actionable guidance ═══
