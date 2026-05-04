@@ -97,9 +97,13 @@ MF_SOURCE_REGISTRY: dict[tuple[str, str], str] = {
 
 app = FastAPI(title="Investment Analytics Engine", version="0.1.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+# CORS: allow any localhost / 127.0.0.1 port in dev so the dynamic-port
+# launcher (api.server) doesn't break a separate frontend dev server.
+# The SPA mounted at "/" is same-origin and doesn't need CORS at all;
+# this regex only matters for cross-origin dev tools.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1353,5 +1357,5 @@ if frontend_dir.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api.main:app", host="127.0.0.1", port=8010, reload=False)
+    from api.server import run
+    run()

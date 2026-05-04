@@ -11,8 +11,10 @@ pip install -q -r requirements.txt 2>/dev/null
 
 echo ""
 echo "Starting Investment Analytics Engine..."
-echo "Open http://127.0.0.1:8010 in your browser"
+echo "(set PORT to override the default 8010; falls back if busy)"
 echo ""
 
-open http://127.0.0.1:8010 &
-uvicorn api.main:app --host 127.0.0.1 --port 8010
+# Server picks its own port (env PORT, default 8010; scans up if busy),
+# prints the chosen URL, and opens the browser. No hardcoded port here
+# so the launcher and the running server can never disagree.
+exec python -m api.server

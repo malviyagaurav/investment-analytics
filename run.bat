@@ -11,9 +11,10 @@ pip install -q -r requirements.txt 2>nul
 
 echo.
 echo Starting Investment Analytics Engine...
-echo Open http://127.0.0.1:8010 in your browser
+echo (set PORT to override the default 8010; falls back if busy)
 echo.
 
-start http://127.0.0.1:8010
-uvicorn api.main:app --host 127.0.0.1 --port 8010
+REM Server picks its own port (env PORT, default 8010; scans up if busy),
+REM prints the chosen URL, and opens the browser.
+python -m api.server
 pause
