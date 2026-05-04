@@ -396,6 +396,61 @@ def scenario_mixed_categories_and_concentration() -> None:
           str(out["concentration"]))
 
 
+def scenario_coverage_integrity() -> None:
+    """ITEM 1: capital-weighted coverage drops portfolio confidence
+    when a meaningful share sits in unanalyzable holdings."""
+    banner("SCENARIO 10: Coverage Integrity Layer (item 1)")
+    cat = "Equity Scheme - Large Cap Fund"
+    funds = [F(1001 + i) for i in range(5)]
+    eq_rankings = {cat: category_ranking(funds, cat)}
+
+    # Scenario A: 65% ranked, 35% ETF → "partial"
+    registry_a = [
+        Scheme(1001, funds[0].fund_name, cat, "AMC X"),
+        Scheme(7777, "Some Index ETF Direct - Growth",
+               "Other Scheme - Index Funds", "AMC Y"),
+    ]
+    weights_a = {1001: 0.65, 7777: 0.35}
+    out_a = run_with_rankings([1001, 7777], registry_a, eq_rankings, {},
+                              weights=weights_a)
+    cov_a = out_a.get("coverage")
+    check("10.1 partial-coverage band exposed", cov_a is not None)
+    if cov_a:
+        check("10.2 partial band when 35% in ETF",
+              cov_a["confidence_band"] == "partial",
+              cov_a["confidence_band"])
+        check("10.3 analyzed_pct ≈ 65", abs(cov_a["analyzed_pct"] - 65.0) < 0.1,
+              str(cov_a["analyzed_pct"]))
+        check("10.4 affected_metrics non-empty",
+              len(cov_a["affected_metrics"]) > 0)
+        check("10.5 note explains caveat",
+              "approximate" in cov_a["note"].lower(),
+              cov_a["note"][:80])
+
+    # Scenario B: 100% ranked → "full", no banner needed
+    registry_b = [Scheme(1001, funds[0].fund_name, cat, "AMC X")]
+    out_b = run_with_rankings([1001], registry_b, eq_rankings, {})
+    cov_b = out_b.get("coverage")
+    check("10.6 full band when no unranked holdings",
+          cov_b and cov_b["confidence_band"] == "full",
+          cov_b["confidence_band"] if cov_b else "missing")
+    check("10.7 full band emits empty note",
+          cov_b and cov_b["note"] == "",
+          repr(cov_b["note"]) if cov_b else "missing")
+
+    # Scenario C: 30% ranked, 70% ETF → "low"
+    weights_c = {1001: 0.30, 7777: 0.70}
+    out_c = run_with_rankings([1001, 7777], registry_a, eq_rankings, {},
+                              weights=weights_c)
+    cov_c = out_c.get("coverage")
+    check("10.8 low band when ranked share <50%",
+          cov_c and cov_c["confidence_band"] == "low",
+          cov_c["confidence_band"] if cov_c else "missing")
+    check("10.9 low band note flags misleading risk",
+          cov_c and "misleading" in cov_c["note"].lower(),
+          cov_c["note"][:80] if cov_c else "missing")
+
+
 def scenario_hidden_correlation() -> None:
     """SLICE 2 / P3: two cross-category funds whose returns correlate
     above the threshold MUST be flagged in the response, regardless
@@ -517,6 +572,7 @@ def main() -> int:
     scenario_mixed_categories_and_concentration()
     scenario_neutral_comparable_peers()
     scenario_hidden_correlation()
+    scenario_coverage_integrity()
 
     failed: List[Tuple[str, str]] = []
     total = 0

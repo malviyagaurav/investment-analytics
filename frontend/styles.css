@@ -2712,3 +2712,44 @@ pre {
   margin-top: 6px;
   line-height: 1.4;
 }
+
+/* Coverage Integrity Layer (Item 1) — banner above conclusions */
+.health-coverage {
+  border-left-width: 4px;
+  border-left-style: solid;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.health-coverage.cov-partial {
+  background: #fffbeb;
+  border-left-color: #f59e0b;
+}
+.health-coverage.cov-low {
+  background: #fef2f2;
+  border-left-color: #b91c1c;
+}
+.cov-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.cov-label {
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: #1f2937;
+}
+.health-coverage.cov-low .cov-label { color: #991b1b; }
+.cov-pct {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+.cov-note {
+  font-size: 0.78rem;
+  color: #1f2937;
+  line-height: 1.45;
+  margin: 0;
+}

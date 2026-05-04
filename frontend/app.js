@@ -2328,6 +2328,26 @@ function renderPortfolioHealth(data) {
   var topClarity = el('p', 'health-top-clarity', 'Use this to review and compare \u2014 not to blindly replace holdings.');
   insightsEl.appendChild(topClarity);
 
+  /* \u2550\u2550\u2550 COVERAGE INTEGRITY BANNER (Item 1) \u2550\u2550\u2550
+     If a meaningful share of capital sits in unanalyzable holdings
+     (ETFs, hybrids, sectoral, insufficient data), portfolio-level
+     conclusions below are based on a partial view. Surface that
+     before the user reads any of them. */
+  if (data.coverage && data.coverage.confidence_band !== 'full') {
+    var covBand = data.coverage.confidence_band; /* "partial" | "low" */
+    var covCls = covBand === 'low' ? 'cov-low' : 'cov-partial';
+    var covBox = el('article', 'insight health-coverage ' + covCls);
+    var covHead = el('div', 'cov-head');
+    covHead.appendChild(el('span', 'cov-label',
+      covBand === 'low' ? '\u26a0 Limited coverage' : 'Partial coverage'));
+    covHead.appendChild(el('span', 'cov-pct',
+      data.coverage.analyzed_pct.toFixed(1) + '% analyzed / '
+      + data.coverage.not_ranked_pct.toFixed(1) + '% not ranked'));
+    covBox.appendChild(covHead);
+    covBox.appendChild(el('p', 'cov-note', data.coverage.note));
+    insightsEl.appendChild(covBox);
+  }
+
   /* Header */
   var header = el('article', 'insight ranking-header');
   header.appendChild(el('p', 'global-disclaimer', 'This tool supports decision-making, not guarantees outcomes. Verify independently before acting.'));

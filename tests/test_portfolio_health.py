@@ -452,5 +452,102 @@ class DecisionSummaryWeightTests(unittest.TestCase):
                 )
 
 
+class CoverageIntegrityTests(unittest.TestCase):
+    """Item 1: capital-weighted analyzed coverage must classify the
+    portfolio into full/partial/low confidence bands and emit a note
+    that the UI can render above conclusions."""
+
+    def _ranking(self, cat: str = "Equity Scheme - Large Cap Fund") -> CategoryRanking:
+        funds = [
+            _make_fund(901, vol=11, dd=-12, cons=70, ret=4.0),
+            _make_fund(902, vol=12, dd=-13, cons=65, ret=3.0),
+            _make_fund(903, vol=13, dd=-14, cons=58, ret=2.0),
+            _make_fund(904, vol=14, dd=-15, cons=55, ret=1.5),
+            _make_fund(905, vol=20, dd=-30, cons=20, ret=-2.0),
+        ]
+        ranked = [
+            RankedFund(rank=i + 1, fund=f, dominance_count=4 - i, total_peers=5,
+                       confidence_level="High", strengths=[], weaknesses=[])
+            for i, f in enumerate(funds)
+        ]
+        return CategoryRanking(
+            category=cat, benchmark_name="Nifty 100", benchmark_code=999,
+            benchmark_fallback=False, ranked=ranked, excluded=[],
+            computed_at="2026-04-30T00:00:00+00:00", total_funds_in_category=5,
+        )
+
+    def _run(self, scheme_codes, registry, weights=None):
+        ranking = self._ranking()
+        with patch.object(ph, "load_registry", return_value=registry), \
+             patch.object(ph, "_get_or_rank_equity", return_value=ranking), \
+             patch.object(ph, "_get_or_rank_debt", return_value=None), \
+             patch.object(ph, "fetch_scheme_nav",
+                          side_effect=RuntimeError("no NAV in test")):
+            return ph.check_portfolio_health(
+                scheme_codes=scheme_codes, weights=weights,
+                registry_path="ignored",
+            )
+
+    def test_full_coverage_band_when_all_holdings_ranked(self) -> None:
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [_Scheme(905, "Held Direct Plan - Growth", cat, "AMC X")]
+        result = self._run([905], registry)
+        cov = result.coverage
+        self.assertIsNotNone(cov)
+        self.assertEqual(cov.confidence_band, "full")
+        self.assertEqual(cov.analyzed_pct, 100.0)
+        self.assertEqual(cov.not_ranked_pct, 0.0)
+        self.assertEqual(cov.note, "")
+        self.assertEqual(cov.affected_metrics, [])
+
+    def test_partial_coverage_band_when_etf_is_minority(self) -> None:
+        # 70/30: ranked equity fund + ETF (Not Ranked).
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(905, "Held Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(7777, "Some Index ETF Direct - Growth",
+                    "Other Scheme - Index Funds", "AMC Y"),
+        ]
+        weights = {905: 0.65, 7777: 0.35}  # 65% ranked → "partial" (50-70)
+        result = self._run([905, 7777], registry, weights=weights)
+        cov = result.coverage
+        self.assertEqual(cov.confidence_band, "partial")
+        self.assertAlmostEqual(cov.analyzed_pct, 65.0, places=1)
+        self.assertAlmostEqual(cov.not_ranked_pct, 35.0, places=1)
+        self.assertIn("portfolio-level", cov.note.lower())
+        self.assertGreater(len(cov.affected_metrics), 0)
+
+    def test_low_coverage_band_when_etf_is_majority(self) -> None:
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(905, "Held Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(7777, "Index ETF Direct - Growth",
+                    "Other Scheme - Index Funds", "AMC Y"),
+        ]
+        weights = {905: 0.30, 7777: 0.70}  # 30% ranked → "low"
+        result = self._run([905, 7777], registry, weights=weights)
+        cov = result.coverage
+        self.assertEqual(cov.confidence_band, "low")
+        self.assertLess(cov.analyzed_pct, 50.0)
+        self.assertIn("misleading", cov.note.lower())
+
+    def test_coverage_serialised_in_response(self) -> None:
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(905, "Held Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(7777, "ETF Direct - Growth",
+                    "Other Scheme - Index Funds", "AMC Y"),
+        ]
+        weights = {905: 0.40, 7777: 0.60}
+        result = self._run([905, 7777], registry, weights=weights)
+        out = ph.portfolio_health_to_dict(result, weights=weights)
+        self.assertIn("coverage", out)
+        cov = out["coverage"]
+        self.assertEqual(cov["confidence_band"], "low")
+        self.assertEqual(cov["total_holdings"], 2)
+        self.assertEqual(cov["analyzed_holdings"], 1)
+        self.assertIn("affected_metrics", cov)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

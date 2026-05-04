@@ -683,6 +683,39 @@ class ConcentrationWarning:
     message: str
 
 
+# Coverage-band thresholds. Below these capital-weighted ratios of
+# successfully-peer-ranked holdings, portfolio-level conclusions
+# (concentration, redundancy, exposure gaps, "Well diversified" label)
+# carry uncertainty the user must see. We DO NOT block the conclusions
+# at low coverage — blocking is unfriendly and removes the partial
+# signal the user paid attention for. Instead we tag them.
+COVERAGE_FULL_PCT = 70.0   # >= 70% capital analyzed → full confidence
+COVERAGE_PARTIAL_PCT = 50.0  # 50-70% → partial; <50% → low
+
+
+@dataclass
+class CoverageReport:
+    """How much of the portfolio's capital we can actually analyze.
+
+    `analyzed_pct` is the capital-weighted share of holdings that
+    received a real peer rank (status != "Not Ranked"). The
+    `confidence_band` summarizes that for the UI:
+      - "full":    >= COVERAGE_FULL_PCT (no banner needed)
+      - "partial": 50..<70% (caveat banner)
+      - "low":     < 50%  (prominent banner)
+    Per-fund decisions are unaffected by coverage; only portfolio-level
+    conclusions get the caveat.
+    """
+    total_holdings: int
+    analyzed_holdings: int
+    analyzed_pct: float           # 0..100, capital-weighted
+    not_ranked_pct: float         # 0..100, capital-weighted
+    confidence_band: str          # "full" | "partial" | "low"
+    note: str                     # human-readable explanation; "" when full
+    affected_metrics: List[str]   # names of portfolio-level outputs whose
+                                  # confidence is degraded by low coverage
+
+
 @dataclass
 class PortfolioHealthResult:
     """Complete portfolio health check result."""
@@ -697,6 +730,7 @@ class PortfolioHealthResult:
     computed_at: str
     correlations: List[Dict[str, Any]] = field(default_factory=list)
     correlation_threshold: float = HIGH_CORRELATION_THRESHOLD
+    coverage: Optional[CoverageReport] = None
 
 
 # ── Core logic ─────────────────────────────────────────────────
@@ -1150,6 +1184,12 @@ def check_portfolio_health(
     # ── Risk summary ──
     risk_summary = _build_risk_summary(holdings, weights)
 
+    # ── Coverage Integrity Layer ──
+    # Capital-weighted share of holdings that got a real peer rank.
+    # "Not Ranked" holdings (ETFs, hybrids, sectoral, insufficient data,
+    # registry misses) contribute to not_ranked_pct, NOT analyzed_pct.
+    coverage = _build_coverage_report(holdings, weights or {})
+
     # ── Portfolio-level analysis ──
     mistakes = _detect_mistakes(holdings)
     redundancies = _detect_redundancy(holdings)
@@ -1182,6 +1222,81 @@ def check_portfolio_health(
         computed_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         correlations=correlations,
         correlation_threshold=HIGH_CORRELATION_THRESHOLD,
+        coverage=coverage,
+    )
+
+
+def _build_coverage_report(
+    holdings: List[FundHealthResult],
+    weights: Dict[int, float],
+) -> CoverageReport:
+    """Compute capital-weighted analyzed coverage and pick a band."""
+    total = len(holdings)
+    if total == 0:
+        return CoverageReport(
+            total_holdings=0, analyzed_holdings=0,
+            analyzed_pct=0.0, not_ranked_pct=0.0,
+            confidence_band="full", note="", affected_metrics=[],
+        )
+
+    eq_weight = 1.0 / total
+    held_codes = {h.scheme_code for h in holdings}
+    held_weight_total = sum(weights.get(c, 0) for c in held_codes) or 0.0
+    if held_weight_total > 0:
+        resolved = {c: weights.get(c, 0) / held_weight_total for c in held_codes}
+    else:
+        resolved = {h.scheme_code: eq_weight for h in holdings}
+
+    analyzed_weight = sum(
+        resolved.get(h.scheme_code, eq_weight)
+        for h in holdings
+        if h.status != "Not Ranked"
+    )
+    analyzed_pct = round(analyzed_weight * 100, 1)
+    not_ranked_pct = round((1.0 - analyzed_weight) * 100, 1)
+    analyzed_holdings = sum(1 for h in holdings if h.status != "Not Ranked")
+
+    affected = [
+        "portfolio_status",
+        "concentration",
+        "redundancies",
+        "exposure_gaps",
+        "correlations",
+        "no_major_issues",
+    ]
+
+    if analyzed_pct >= COVERAGE_FULL_PCT:
+        band = "full"
+        note = ""
+        return CoverageReport(
+            total_holdings=total, analyzed_holdings=analyzed_holdings,
+            analyzed_pct=analyzed_pct, not_ranked_pct=not_ranked_pct,
+            confidence_band=band, note=note, affected_metrics=[],
+        )
+    if analyzed_pct >= COVERAGE_PARTIAL_PCT:
+        band = "partial"
+        note = (
+            f"Only {analyzed_pct}% of portfolio capital received peer analysis. "
+            f"The remaining {not_ranked_pct}% (ETFs, hybrids, sectoral funds, "
+            f"or holdings with insufficient data) cannot be peer-ranked. "
+            f"Treat portfolio-level conclusions as approximate."
+        )
+        return CoverageReport(
+            total_holdings=total, analyzed_holdings=analyzed_holdings,
+            analyzed_pct=analyzed_pct, not_ranked_pct=not_ranked_pct,
+            confidence_band=band, note=note, affected_metrics=affected,
+        )
+    band = "low"
+    note = (
+        f"Only {analyzed_pct}% of portfolio capital received peer analysis. "
+        f"Portfolio-level conclusions (diversification, concentration, exposure "
+        f"gaps, correlation) are based on a minority of capital and may be "
+        f"misleading. Per-fund decisions on the analyzed subset remain valid."
+    )
+    return CoverageReport(
+        total_holdings=total, analyzed_holdings=analyzed_holdings,
+        analyzed_pct=analyzed_pct, not_ranked_pct=not_ranked_pct,
+        confidence_band=band, note=note, affected_metrics=affected,
     )
 
 
@@ -1404,6 +1519,17 @@ def portfolio_health_to_dict(
         "exposure_gaps": result.exposure_gaps,
         "correlations": _enrich_correlations(result.correlations, result.holdings),
         "correlation_threshold": result.correlation_threshold,
+        "coverage": (
+            None if result.coverage is None else {
+                "total_holdings": result.coverage.total_holdings,
+                "analyzed_holdings": result.coverage.analyzed_holdings,
+                "analyzed_pct": result.coverage.analyzed_pct,
+                "not_ranked_pct": result.coverage.not_ranked_pct,
+                "confidence_band": result.coverage.confidence_band,
+                "note": result.coverage.note,
+                "affected_metrics": result.coverage.affected_metrics,
+            }
+        ),
         "risk_summary": result.risk_summary,
         "portfolio_status": result.portfolio_status,
         "no_major_issues": (
