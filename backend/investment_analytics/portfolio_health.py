@@ -733,6 +733,7 @@ class PortfolioHealthResult:
     correlation_threshold: float = HIGH_CORRELATION_THRESHOLD
     coverage: Optional[CoverageReport] = None
     action_priority: Optional[Dict[str, Any]] = None
+    structural_priority: Optional[Dict[str, Any]] = None
     top_ranked_by_category: List[Dict[str, Any]] = field(default_factory=list)
     plan_efficiency_flags: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -1225,6 +1226,20 @@ def check_portfolio_health(
     # of the same scheme has a structurally lower expense ratio.
     # Surfaced as a separate signal, not as Continue/Monitor/Review.
     plan_efficiency_flags = _detect_regular_plan_holdings(holdings, registry)
+    # Attach capital-weight % to each flag so a small Regular plan and
+    # a large Regular plan are visually distinguishable in the UI.
+    _resolved_weights = _resolve_weights(holdings, weights or {})
+    _eq_w = 1.0 / (len(holdings) or 1)
+    for f in plan_efficiency_flags:
+        f["weight_pct"] = round(
+            _resolved_weights.get(f["scheme_code"], _eq_w) * 100, 1
+        )
+
+    # Structural priority — heaviest Regular plan holding. Distinct
+    # from action_priority (peer-rank verdict). UI renders both.
+    structural_priority = _build_structural_priority(
+        plan_efficiency_flags, holdings, weights or {},
+    )
 
     _ranking_cache = {}  # clear cache
 
@@ -1274,6 +1289,7 @@ def check_portfolio_health(
         correlation_threshold=HIGH_CORRELATION_THRESHOLD,
         coverage=coverage,
         action_priority=action_priority,
+        structural_priority=structural_priority,
         top_ranked_by_category=top_ranked_by_category,
         plan_efficiency_flags=plan_efficiency_flags,
     )
@@ -1385,6 +1401,22 @@ def _portfolio_status_label(
     return "Well diversified"
 
 
+def _resolve_weights(
+    holdings: List[FundHealthResult],
+    weights: Dict[int, float],
+) -> Dict[int, float]:
+    """Resolve per-holding weights, normalising user-supplied weights and
+    falling back to equal share when none are provided. Used by the
+    priority + flag enrichment helpers below."""
+    n = len(holdings) or 1
+    eq_weight = 1.0 / n
+    held_codes = {h.scheme_code for h in holdings}
+    held_weight_total = sum(weights.get(c, 0) for c in held_codes) or 0.0
+    if held_weight_total > 0:
+        return {c: weights.get(c, 0) / held_weight_total for c in held_codes}
+    return {c: eq_weight for c in held_codes}
+
+
 def _build_action_priority(
     holdings: List[FundHealthResult],
     weights: Dict[int, float],
@@ -1397,14 +1429,8 @@ def _build_action_priority(
     """
     if not holdings:
         return None
-    n = len(holdings)
-    eq_weight = 1.0 / n
-    held_codes = {h.scheme_code for h in holdings}
-    held_weight_total = sum(weights.get(c, 0) for c in held_codes) or 0.0
-    if held_weight_total > 0:
-        resolved = {c: weights.get(c, 0) / held_weight_total for c in held_codes}
-    else:
-        resolved = {c: eq_weight for c in held_codes}
+    resolved = _resolve_weights(holdings, weights)
+    eq_weight = 1.0 / (len(holdings) or 1)
 
     # Severity rank: Review = 2, Monitor = 1, Continue = 0.
     severity_rank = {"Review": 2, "Monitor": 1, "Continue": 0}
@@ -1430,6 +1456,94 @@ def _build_action_priority(
             f"({round(w * 100, 1)}% of portfolio, {_short_category(h.category)})"
         ),
     }
+
+
+def _build_structural_priority(
+    plan_efficiency_flags: List[Dict[str, Any]],
+    holdings: List[FundHealthResult],
+    weights: Dict[int, float],
+) -> Optional[Dict[str, Any]]:
+    """Pick the heaviest STRUCTURAL inefficiency (currently: Regular plan
+    holdings). Distinct from action_priority because plan choice is not
+    a peer-rank verdict — it's a fixed cost leak that exists even on a
+    rank-1 fund.
+
+    Returns None when no Regular plan holdings exist. The UI renders
+    this alongside action_priority; whichever has more weight gets
+    visual primacy. We deliberately do NOT collapse the two axes —
+    "your top fund is on the wrong plan" and "your bottom fund is
+    a peer-rank Review" are different problems that deserve
+    different headlines.
+    """
+    if not plan_efficiency_flags:
+        return None
+    resolved = _resolve_weights(holdings, weights)
+    eq_weight = 1.0 / (len(holdings) or 1)
+    by_code = {h.scheme_code: h for h in holdings}
+    candidates = []
+    for f in plan_efficiency_flags:
+        code = f["scheme_code"]
+        h = by_code.get(code)
+        if h is None:
+            continue
+        w = resolved.get(code, eq_weight)
+        candidates.append((w, f, h))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: -t[0])
+    w, flag, h = candidates[0]
+    pct = round(w * 100, 1)
+    return {
+        "scheme_code": h.scheme_code,
+        "fund_name": h.fund_name,
+        "weight_pct": pct,
+        "category_short": _short_category(h.category),
+        "type": "regular_plan",
+        "direct_sibling_code": (
+            None if flag.get("direct_sibling") is None
+            else flag["direct_sibling"]["scheme_code"]
+        ),
+        "headline": (
+            f"Plan inefficiency: {h.fund_name} is on the Regular plan "
+            f"({pct}% of portfolio). Direct plan variant has a structurally "
+            f"lower expense ratio."
+        ),
+    }
+
+
+def _primary_metric_gap(
+    held_metrics: Dict[str, Any],
+    top_metrics: Dict[str, Any],
+    asset_class: str,
+) -> Optional[Dict[str, Any]]:
+    """Pick the single largest improvement metric and return its delta
+    + magnitude bucket. Used to quantify the gap between a held fund
+    and the rank-1 fund in its category, so "top-ranked exists" turns
+    from a label into a quantified observation."""
+    bullets = _EQUITY_BULLETS if asset_class == "equity" else _DEBT_BULLETS
+    best: Optional[Dict[str, Any]] = None
+    for key, label in bullets:
+        h_val = held_metrics.get(key, 0) or 0
+        t_val = top_metrics.get(key, 0) or 0
+        delta = _signed_delta(key, h_val, t_val)
+        if delta <= 0:
+            continue
+        magnitude = _improvement_magnitude(key, delta, asset_class)
+        rank = {"large": 3, "moderate": 2, "small": 1}.get(magnitude, 0)
+        if best is None or rank > best["_rank"]:
+            best = {
+                "metric": key,
+                "label": label,
+                "held_value": round(h_val, 2),
+                "top_value": round(t_val, 2),
+                "delta": round(abs(delta), 2),
+                "magnitude": magnitude,
+                "_rank": rank,
+            }
+    if best is None:
+        return None
+    best.pop("_rank", None)
+    return best
 
 
 def _collect_top_ranked_per_category(
@@ -1466,6 +1580,32 @@ def _collect_top_ranked_per_category(
         held_in_cat = {x.scheme_code for x in holdings if x.category == h.category}
         if top.fund.scheme_code in held_in_cat:
             continue
+        # Compute the gap between the user's held fund(s) in this
+        # category and the rank-1 fund. "Top-ranked exists" is
+        # informational; "top-ranked beats yours by 2.7pp on excess
+        # return" is decision-relevant. Quantification is non-advisory.
+        top_metrics = _metrics_for_display(top.fund, h.asset_class)
+        vs_holdings: List[Dict[str, Any]] = []
+        for held in holdings:
+            if held.category != h.category:
+                continue
+            if not held.metrics:
+                continue
+            gap = _primary_metric_gap(held.metrics, top_metrics, held.asset_class)
+            if gap is None:
+                continue
+            # Determine whether the gap clears the material-improvement
+            # gate (same logic the alternatives filter uses).
+            material = _alternative_is_material(
+                held.metrics, top_metrics, held.asset_class,
+            )
+            vs_holdings.append({
+                "held_scheme_code": held.scheme_code,
+                "held_fund_name": held.fund_name,
+                "primary_delta": gap,
+                "is_material": material,
+            })
+
         out.append({
             "category": h.category,
             "category_short": _short_category(h.category),
@@ -1473,6 +1613,7 @@ def _collect_top_ranked_per_category(
             "fund_name": top.fund.fund_name,
             "fund_house": top.fund.fund_house,
             "confidence_level": top.confidence_level,
+            "vs_holdings": vs_holdings,
         })
     return out
 
@@ -1645,39 +1786,58 @@ def _filter_top_ranked_by_coverage(
 def _enrich_correlations(
     pairs: List[Dict[str, Any]],
     holdings: List["FundHealthResult"],
+    weights: Optional[Dict[int, float]] = None,
 ) -> List[Dict[str, Any]]:
-    """Attach fund names + categories to each correlation pair so the UI
-    can render without a separate lookup. Drops pairs whose codes are
-    not present in `holdings` (defensive)."""
+    """Attach fund names + categories AND per-fund + combined capital
+    weight to each correlation pair so the UI can rank pairs by
+    capital impact (a 50%/40% pair matters more than a 5%/3% pair
+    even at identical ρ). Drops pairs whose codes are not present in
+    `holdings` (defensive)."""
     by_code = {h.scheme_code: h for h in holdings}
+    resolved = _resolve_weights(holdings, weights or {})
+    eq_w = 1.0 / (len(holdings) or 1)
+
+    def _w(code: int) -> float:
+        return resolved.get(code, eq_w)
+
     enriched: List[Dict[str, Any]] = []
     for p in pairs:
         a = by_code.get(p["fund_a_code"])
         b = by_code.get(p["fund_b_code"])
         if not a or not b:
             continue
+        a_w = round(_w(a.scheme_code) * 100, 1)
+        b_w = round(_w(b.scheme_code) * 100, 1)
+        combined_w = round(a_w + b_w, 1)
         enriched.append({
             "fund_a": {
                 "scheme_code": a.scheme_code,
                 "fund_name": a.fund_name,
                 "category_short": _short_category(a.category),
+                "weight_pct": a_w,
             },
             "fund_b": {
                 "scheme_code": b.scheme_code,
                 "fund_name": b.fund_name,
                 "category_short": _short_category(b.category),
+                "weight_pct": b_w,
             },
             "correlation": p["correlation"],
             "common_days": p["common_days"],
             "cross_category": a.category != b.category,
+            "combined_weight_pct": combined_w,
             "message": (
                 "Funds move together (correlation "
                 + str(p["correlation"])
                 + (" across different categories" if a.category != b.category
                    else " in the same category")
+                + f"; combined {combined_w}% of portfolio"
                 + ") — actual diversification is lower than category labels suggest"
             ),
         })
+    # Sort by combined capital first, correlation second — a heavy
+    # pair at 0.86 is more decision-relevant than a tiny pair at 0.99.
+    enriched.sort(key=lambda x: (-x["combined_weight_pct"], -x["correlation"]))
     return enriched
 
 
@@ -1836,7 +1996,9 @@ def portfolio_health_to_dict(
         "mistakes": result.mistakes,
         "redundancies": result.redundancies,
         "exposure_gaps": result.exposure_gaps,
-        "correlations": _enrich_correlations(result.correlations, result.holdings),
+        "correlations": _enrich_correlations(
+            result.correlations, result.holdings, weights,
+        ),
         "correlation_threshold": result.correlation_threshold,
         "coverage": (
             None if result.coverage is None else {
@@ -1850,6 +2012,7 @@ def portfolio_health_to_dict(
             }
         ),
         "action_priority": result.action_priority,
+        "structural_priority": result.structural_priority,
         "top_ranked_by_category": _filter_top_ranked_by_coverage(
             result.top_ranked_by_category, result.coverage,
         ),

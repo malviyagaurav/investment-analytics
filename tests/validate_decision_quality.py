@@ -460,6 +460,43 @@ def scenario_compression_and_dominance() -> None:
     direct_flags = [f for f in pe if f["scheme_code"] in (2003, 2005)]
     check("11.8 Direct holdings NOT flagged",
           len(direct_flags) == 0, str(direct_flags))
+    # Plan flag carries weight_pct (capital-weighted visibility).
+    if reg_flags:
+        check("11.9 plan flag carries weight_pct",
+              "weight_pct" in reg_flags[0]
+              and isinstance(reg_flags[0]["weight_pct"], (int, float)),
+              str(reg_flags[0].get("weight_pct")))
+
+    # Structural priority: heaviest Regular plan ranked separately
+    # from action_priority (peer-rank) — does not collapse the axes.
+    sp = out.get("structural_priority")
+    check("11.10 structural_priority surfaces Regular plan",
+          sp is not None and sp["scheme_code"] == 3001,
+          (sp or {}).get("scheme_code"))
+    check("11.11 structural_priority headline mentions inefficiency",
+          sp and "Plan inefficiency" in sp["headline"],
+          (sp or {}).get("headline"))
+
+    # Top-ranked vs holdings: each top-ranked row carries a
+    # primary_delta + is_material flag for each held fund in the
+    # same category.
+    if tr:
+        any_with_gap = False
+        for row in tr:
+            for v in row.get("vs_holdings", []):
+                if v.get("primary_delta"):
+                    any_with_gap = True
+                    check("11.12 vs_holdings primary_delta has magnitude",
+                          v["primary_delta"]["magnitude"] in
+                          {"small", "moderate", "large"},
+                          v["primary_delta"]["magnitude"])
+                    check("11.13 vs_holdings has is_material flag",
+                          isinstance(v.get("is_material"), bool))
+                    break
+            if any_with_gap:
+                break
+        check("11.14 at least one top-ranked row has a gap row",
+              any_with_gap)
 
 
 def scenario_coverage_integrity() -> None:

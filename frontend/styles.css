@@ -2713,21 +2713,69 @@ pre {
   line-height: 1.4;
 }
 
-/* Action-priority headline (item A) — single highest-impact action */
+/* Priority headlines (item A + structural) */
 .health-action-priority {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: linear-gradient(90deg, #fef3c7 0%, #fffbeb 100%);
-  border-left: 4px solid #d97706;
   padding: 10px 14px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   font-size: 0.86rem;
   font-weight: 600;
+}
+.health-action-priority.ap-perf {
+  background: linear-gradient(90deg, #fef3c7 0%, #fffbeb 100%);
+  border-left: 4px solid #d97706;
   color: #92400e;
+}
+.health-action-priority.ap-struct {
+  background: linear-gradient(90deg, #fef9c3 0%, #fffceb 100%);
+  border-left: 4px solid #ca8a04;
+  color: #854d0e;
 }
 .ap-icon { font-size: 1rem; }
 .ap-headline { color: #1f2937; }
+
+/* Top-ranked vs holdings — material gap row */
+.tr-vs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed #e5e7eb;
+  font-size: 0.7rem;
+}
+.tr-vs-label {
+  font-weight: 600;
+  color: #475569;
+}
+.tr-vs-metric { color: #1f2937; }
+.tr-vs-delta {
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+.tr-vs-note {
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-style: italic;
+  flex-basis: 100%;
+}
+
+/* Plan flag head — split label + weight */
+.health-plan-flag .pf-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.pf-weight {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #854d0e;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Top-ranked per held category (non-advisory) */
 .health-top-ranked { padding: 12px 14px; }

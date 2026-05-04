@@ -2379,16 +2379,36 @@ function renderPortfolioHealth(data) {
   if (lims) header.appendChild(lims);
   insightsEl.appendChild(header);
 
-  /* ═══ ACTION-PRIORITY HEADLINE (item A) ═══
-     One-line "address this first" picked by capital weight + severity
-     in the backend. Pure pointer to a position the user already
-     holds — not a recommendation. */
+  /* ═══ PRIORITY HEADLINES (item A + structural) ═══
+     Two orthogonal signals: action_priority surfaces the heaviest
+     non-Continue holding (peer-rank verdict). structural_priority
+     surfaces the heaviest Regular plan holding (cost-leak fact).
+     Both render when both exist; the heavier-weight one renders
+     first so the user reads the higher-impact issue at the top. */
+  var priorities = [];
   if (data.action_priority) {
-    var apBox = el('article', 'insight health-action-priority');
-    apBox.appendChild(el('span', 'ap-icon', '➤'));
-    apBox.appendChild(el('span', 'ap-headline', data.action_priority.headline));
-    insightsEl.appendChild(apBox);
+    priorities.push({
+      cls: 'ap-perf',
+      icon: '➤',
+      headline: data.action_priority.headline,
+      weight: data.action_priority.weight_pct || 0,
+    });
   }
+  if (data.structural_priority) {
+    priorities.push({
+      cls: 'ap-struct',
+      icon: '₹',  /* rupee — structural cost */
+      headline: data.structural_priority.headline,
+      weight: data.structural_priority.weight_pct || 0,
+    });
+  }
+  priorities.sort(function(a, b) { return b.weight - a.weight; });
+  priorities.forEach(function(p) {
+    var apBox = el('article', 'insight health-action-priority ' + p.cls);
+    apBox.appendChild(el('span', 'ap-icon', p.icon));
+    apBox.appendChild(el('span', 'ap-headline', p.headline));
+    insightsEl.appendChild(apBox);
+  });
 
   /* ═══ DECISION SUMMARY (TOP BLOCK) ═══ */
   /* UI-1: each entry carries weight_pct from backend; sorted desc.
@@ -2463,6 +2483,26 @@ function renderPortfolioHealth(data) {
       if (row.coverage_note) {
         card.appendChild(el('span', 'tr-coverage-note', row.coverage_note));
       }
+      /* Material gap vs each held fund in this category. Quantified
+         observation, not advice. */
+      (row.vs_holdings || []).forEach(function(v) {
+        var gap = v.primary_delta;
+        if (!gap) return;
+        var gapRow = el('div', 'tr-vs');
+        gapRow.appendChild(el('span', 'tr-vs-label', 'vs your holding:'));
+        var magCls = gap.magnitude === 'large' ? 'mag-large'
+                  : gap.magnitude === 'moderate' ? 'mag-moderate' : 'mag-small';
+        gapRow.appendChild(el('span', 'tr-vs-metric', gap.label));
+        gapRow.appendChild(el('span', 'tr-vs-delta',
+          'top ' + gap.top_value + ' vs you ' + gap.held_value
+          + ' (Δ ' + gap.delta + ')'));
+        gapRow.appendChild(el('span', 'health-just-mag ' + magCls, gap.magnitude));
+        if (v.is_material === false) {
+          gapRow.appendChild(el('span', 'tr-vs-note',
+            'gap below material-improvement threshold'));
+        }
+        card.appendChild(gapRow);
+      });
       trGrid.appendChild(card);
     });
     trSection.appendChild(trGrid);
@@ -2551,7 +2591,9 @@ function renderPortfolioHealth(data) {
     /* P3: high-correlation pairs (hidden overlap). Different category
        labels can mask the fact that two funds move together — this
        row surfaces the actual return correlation so the user sees
-       what category-based diversification logic missed. */
+       what category-based diversification logic missed. Carries
+       per-fund + combined capital weights so the UI can rank pairs
+       by capital impact, not just correlation strength. */
     corrPairs.forEach(function(c) {
       var sevCls = c.correlation >= 0.95 ? 'issue-high' :
                    c.correlation >= 0.90 ? 'issue-moderate' : 'issue-info';
@@ -2559,12 +2601,20 @@ function renderPortfolioHealth(data) {
       row.appendChild(el('span', 'issue-type', 'high overlap'));
       var nameA = c.fund_a.fund_name.replace(/ - Direct.*$/i, '').replace(/ Direct.*$/i, '');
       var nameB = c.fund_b.fund_name.replace(/ - Direct.*$/i, '').replace(/ Direct.*$/i, '');
+      var weightA = (typeof c.fund_a.weight_pct === 'number')
+        ? ' [' + c.fund_a.weight_pct.toFixed(1) + '%]' : '';
+      var weightB = (typeof c.fund_b.weight_pct === 'number')
+        ? ' [' + c.fund_b.weight_pct.toFixed(1) + '%]' : '';
       var catNote = c.cross_category
         ? ' [' + c.fund_a.category_short + ' ↔ ' + c.fund_b.category_short + ']'
         : ' [same category]';
-      var corrChip = ' (ρ=' + c.correlation.toFixed(2) + ', ' + c.common_days + ' days)';
+      var combined = (typeof c.combined_weight_pct === 'number')
+        ? ' · combined ' + c.combined_weight_pct.toFixed(1) + '%'
+        : '';
+      var corrChip = ' (ρ=' + c.correlation.toFixed(2) + ', ' + c.common_days + ' days' + combined + ')';
       row.appendChild(el('span', 'issue-msg',
-        nameA + ' ↔ ' + nameB + catNote + corrChip + ' — moves together; actual diversification is lower than category labels suggest.'));
+        nameA + weightA + ' ↔ ' + nameB + weightB + catNote + corrChip
+        + ' — moves together; actual diversification is lower than category labels suggest.'));
       issuesSection.appendChild(row);
     });
 
@@ -2768,7 +2818,13 @@ function renderHoldingCard(h, planFlag) {
      Continue/Monitor/Review axis. Pure observation, not advice. */
   if (planFlag && planFlag.is_regular_plan) {
     var pfBox = el('div', 'health-plan-flag');
-    pfBox.appendChild(el('span', 'pf-label', 'Plan structure'));
+    var pfHead = el('div', 'pf-head');
+    pfHead.appendChild(el('span', 'pf-label', 'Plan structure'));
+    if (typeof planFlag.weight_pct === 'number') {
+      pfHead.appendChild(el('span', 'pf-weight',
+        planFlag.weight_pct.toFixed(1) + '% of portfolio'));
+    }
+    pfBox.appendChild(pfHead);
     pfBox.appendChild(el('span', 'pf-text', planFlag.message));
     if (planFlag.direct_sibling) {
       pfBox.appendChild(el('span', 'pf-sibling',

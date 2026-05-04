@@ -719,6 +719,67 @@ class CompressionLayerTests(unittest.TestCase):
         _, out = self._run([2001], registry)
         self.assertEqual(out["plan_efficiency_flags"], [])
 
+    def test_top_ranked_carries_material_gap_vs_holdings(self) -> None:
+        """vs_holdings: each held fund in the same category gets a
+        primary_delta + is_material flag against the rank-1 fund."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [_Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC X")]
+        _, out = self._run([2003], registry)
+        rows = out["top_ranked_by_category"]
+        self.assertEqual(len(rows), 1)
+        vs = rows[0].get("vs_holdings", [])
+        self.assertEqual(len(vs), 1)
+        v = vs[0]
+        self.assertEqual(v["held_scheme_code"], 2003)
+        self.assertIn("primary_delta", v)
+        self.assertIn(v["primary_delta"]["magnitude"], {"small", "moderate", "large"})
+        self.assertIn("is_material", v)
+        self.assertIsInstance(v["is_material"], bool)
+        # Numeric delta must be non-negative.
+        self.assertGreaterEqual(v["primary_delta"]["delta"], 0.0)
+
+    def test_structural_priority_picks_heaviest_regular(self) -> None:
+        """structural_priority surfaces the heaviest Regular plan
+        holding by capital — distinct from action_priority."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(3001, "Acme Bluechip Regular Plan - Growth", cat, "Acme"),
+            _Scheme(3002, "Acme Bluechip Direct Plan - Growth", cat, "Acme"),
+            _Scheme(4001, "Beta Fund Regular Plan - Growth", cat, "Beta MF"),
+            _Scheme(4002, "Beta Fund Direct Plan - Growth", cat, "Beta MF"),
+        ]
+        # Both 3001 and 4001 are Regular plans. 4001 has more weight.
+        weights = {2003: 0.30, 3001: 0.20, 4001: 0.50}
+        _, out = self._run([2003, 3001, 4001], registry, weights=weights)
+        sp = out["structural_priority"]
+        self.assertIsNotNone(sp)
+        self.assertEqual(sp["scheme_code"], 4001,
+                         "Should pick the heaviest Regular plan holding")
+        self.assertEqual(sp["weight_pct"], 50.0)
+        self.assertEqual(sp["type"], "regular_plan")
+        self.assertIn("Plan inefficiency:", sp["headline"])
+
+    def test_structural_priority_none_when_no_regular_plans(self) -> None:
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [_Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC X")]
+        _, out = self._run([2003], registry)
+        self.assertIsNone(out["structural_priority"])
+
+    def test_plan_flag_carries_weight_pct(self) -> None:
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(3001, "Acme Bluechip Regular Plan - Growth", cat, "Acme"),
+            _Scheme(3002, "Acme Bluechip Direct Plan - Growth", cat, "Acme"),
+        ]
+        weights = {2003: 0.40, 3001: 0.60}
+        _, out = self._run([2003, 3001], registry, weights=weights)
+        flags = out["plan_efficiency_flags"]
+        self.assertEqual(len(flags), 1)
+        self.assertIn("weight_pct", flags[0])
+        self.assertEqual(flags[0]["weight_pct"], 60.0)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
