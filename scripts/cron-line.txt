@@ -1,0 +1,7 @@
+# Linux cron equivalent of the launchd job (weekdays 21:30 local).
+# Add to your crontab via:  crontab -e
+#
+# Adjust the absolute path below to match your install location, then
+# paste the line WITHOUT the leading '#'.
+
+# 30 21 * * 1-5  cd /Users/snapdevio/Documents/investment-analytics && /Users/snapdevio/Documents/investment-analytics/venv/bin/python -m backend.jobs.watchlist run >> logs/watchlist.out.log 2>> logs/watchlist.err.log

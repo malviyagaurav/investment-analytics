@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "description": "Categories the daily watchlist runner re-ranks. Edit this file to track different categories. Each category gets ranked independently using the existing pairwise-dominance engine.",
+    "last_updated": "2026-05-06"
+  },
+  "equity_categories": [
+    "Equity Scheme - Large Cap Fund",
+    "Equity Scheme - Mid Cap Fund",
+    "Equity Scheme - Small Cap Fund",
+    "Equity Scheme - Large & Mid Cap Fund",
+    "Equity Scheme - Flexi Cap Fund",
+    "Equity Scheme - Multi Cap Fund"
+  ],
+  "debt_categories": [
+    "Debt Scheme - Short Duration Fund",
+    "Debt Scheme - Corporate Bond Fund",
+    "Debt Scheme - Banking and PSU Fund",
+    "Debt Scheme - Liquid Fund"
+  ],
+  "include_gold": true,
+  "top_n_to_persist": 10
+}

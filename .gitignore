@@ -30,4 +30,8 @@ data/audit/
 data/cache/
 data/registry/
 
+# Watchlist snapshots — regenerated daily by backend.jobs.watchlist
+data/snapshots/
+
+# Diagnostic dumps
 data/sample_realistic_response.json
