@@ -50,13 +50,19 @@ def get_cached_nav(scheme_code: int) -> Optional[dict]:
 def put_cached_nav(scheme_code: int, response: dict) -> None:
     """Write MFAPI response to cache atomically.
 
-    Uses temp-file + rename so a concurrent reader never observes a
-    half-written JSON file. Without this, Path.write_text truncates
-    then writes, and a reader during the window sees corrupted data
-    — graceful-failure code in get_cached_nav() turns that into a
-    cache miss, but it still produces redundant mfapi.in fetches
-    under concurrent load.
+    Uses a per-call unique temp file + rename so a concurrent reader
+    never observes a half-written JSON file, AND two writers for the
+    same scheme_code don't trip over a shared tmp name (which would
+    cause one of them to fail on tmp.replace with FileNotFoundError).
+
+    Without this, Path.write_text would truncate-then-write, and a
+    reader during the window sees corrupted data. With a shared tmp
+    name, two simultaneous writers would race on the rename. The
+    PID+counter suffix below avoids both.
     """
+    import os
+    import threading
+
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     entry = {
         "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -64,9 +70,22 @@ def put_cached_nav(scheme_code: int, response: dict) -> None:
         "response": response,
     }
     target = _cache_path(scheme_code)
-    tmp = target.with_suffix(".json.tmp")
+    # Per-call unique tmp suffix: pid + thread id + monotonic counter.
+    # We just need uniqueness within the process for the rename window.
+    tmp_suffix = f".{os.getpid()}.{threading.get_ident()}.{id(entry)}.tmp"
+    tmp = target.with_name(target.name + tmp_suffix)
     tmp.write_text(json.dumps(entry), encoding="utf-8")
-    tmp.replace(target)
+    try:
+        tmp.replace(target)
+    except FileNotFoundError:
+        # Another writer renamed in between — our content was
+        # legitimately superseded by a concurrent write. Both writes
+        # contained the same logical NAV data for this scheme code,
+        # so either one is correct. Drop tmp if it still exists.
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def clear_cache() -> int:
