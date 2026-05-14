@@ -175,113 +175,14 @@ from backend.investment_analytics.ranking.debt import (
 )
 
 
-# ═══════════════════════════════════════════════════════════════
-# GOLD FUND RANKING — FoF Direct Growth funds
-# ═══════════════════════════════════════════════════════════════
-
-GOLD_FOF_CATEGORY = "Other Scheme - FoF Domestic"
-
-
-def rank_gold_funds(registry_path: str) -> DebtCategoryRanking:
-    """Rank gold FoF funds using absolute metrics.
-
-    Gold ETFs have no Direct/Growth variants and most are too new.
-    Gold FoFs (investing in gold ETFs) have full NAV history.
-    """
-    from pathlib import Path
-    registry = load_registry(Path(registry_path))
-    gold_funds_raw = [
-        s for s in registry
-        if s.scheme_category == GOLD_FOF_CATEGORY
-        and "Direct" in s.scheme_name
-        and "Growth" in s.scheme_name
-        and "gold" in s.scheme_name.lower()
-    ]
-    gold_funds = _deduplicate_variants(gold_funds_raw)
-    total = len(gold_funds)
-
-    if total < 2:
-        raise ValueError(f"Only {total} gold FoF Direct Growth funds found (need >= 2)")
-
-    computed: List[DebtFundMetrics] = []
-    excluded: List[ExcludedFund] = []
-
-    for scheme in gold_funds:
-        try:
-            raw = fetch_scheme_nav(scheme.scheme_code)
-            nav_data = raw.get("data", [])
-            if not nav_data:
-                excluded.append(ExcludedFund(scheme.scheme_code, scheme.scheme_name, "No NAV data"))
-                continue
-            fund_records = _convert_nav_to_records(nav_data)
-            if len(fund_records) < MIN_ALIGNED_POINTS:
-                excluded.append(ExcludedFund(
-                    scheme.scheme_code, scheme.scheme_name,
-                    f"Insufficient data ({len(fund_records)} points, need {MIN_ALIGNED_POINTS})",
-                ))
-                continue
-            metrics = _compute_debt_metrics(scheme.scheme_code, scheme.scheme_name, scheme.fund_house, fund_records)
-            if metrics is None:
-                excluded.append(ExcludedFund(scheme.scheme_code, scheme.scheme_name, "Insufficient data"))
-                continue
-            computed.append(metrics)
-        except Exception as exc:
-            excluded.append(ExcludedFund(scheme.scheme_code, scheme.scheme_name, f"Fetch error: {exc}"))
-
-    if len(computed) < 2:
-        raise ValueError(f"Only {len(computed)} gold funds had sufficient data (need >= 2)")
-
-    ranked_pairs = _compute_debt_dominance(computed)
-
-    ranked_funds: List[RankedFund] = []
-    for rank_pos, (fund, dom_count) in enumerate(ranked_pairs, start=1):
-        strengths, weaknesses = _debt_strengths_weaknesses(fund, computed)
-        adapter = FundMetrics(
-            scheme_code=fund.scheme_code,
-            fund_name=fund.fund_name,
-            fund_house=fund.fund_house,
-            excess_return_pct=fund.cagr_pct,
-            max_drawdown_pct=fund.max_drawdown_pct,
-            consistency_pct=fund.consistency_pct,
-            volatility_pct=fund.volatility_pct,
-            downside_capture_ratio=fund.risk_adj_return,
-            fund_cagr_pct=fund.cagr_pct,
-            benchmark_cagr_pct=0.0,
-            aligned_points=fund.aligned_points,
-            history_years=fund.history_years,
-            drawdown_trough_date=fund.drawdown_trough_date,
-        )
-        ranked_funds.append(RankedFund(
-            rank=rank_pos,
-            fund=adapter,
-            dominance_count=dom_count,
-            total_peers=len(computed),
-            confidence_level=_confidence_level(fund.history_years),
-            strengths=strengths,
-            weaknesses=weaknesses,
-        ))
-
-    return DebtCategoryRanking(
-        category="Gold Fund (FoF)",
-        ranked=ranked_funds,
-        excluded=excluded,
-        computed_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        total_funds_in_category=total,
-    )
-
-
-def gold_ranking_to_dict(result: DebtCategoryRanking) -> dict:
-    """Serialize gold ranking for API response."""
-    d = debt_ranking_to_dict(result)
-    d["asset_class"] = "gold"
-    d["limitations"] = [
-        "All gold funds track the same underlying (gold price). Differences are mainly tracking efficiency and expense ratio.",
-        "Expense ratio is not directly available — return differences serve as proxy.",
-        "Gold ETFs excluded (no Direct Growth variants; most too new for meaningful ranking).",
-    ]
-    if result.excluded:
-        d["limitations"].append(f"{len(result.excluded)} fund(s) excluded due to insufficient data.")
-    return d
+# Gold-fund ranking — GOLD_FOF_CATEGORY, rank_gold_funds,
+# gold_ranking_to_dict — extracted to .gold submodule. Re-imported
+# here so external imports continue to work unchanged.
+from backend.investment_analytics.ranking.gold import (
+    GOLD_FOF_CATEGORY,
+    gold_ranking_to_dict,
+    rank_gold_funds,
+)
 
 
 # ═══════════════════════════════════════════════════════════════
