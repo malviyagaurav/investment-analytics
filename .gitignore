@@ -35,3 +35,7 @@ data/snapshots/
 
 # Diagnostic dumps
 data/sample_realistic_response.json
+
+# Local backup bundles — git bundle archives kept locally as snapshots,
+# not version-controlled (would duplicate repo state inside the repo)
+*.bundle
