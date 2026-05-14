@@ -26,27 +26,24 @@ from backend.data_discovery.registry import SchemeEntry, load_registry
 
 logger = logging.getLogger("investment_analytics.ranking")
 
-# Minimum aligned data points to include a fund (roughly 3 years of trading)
-MIN_ALIGNED_POINTS = 700
-
-# Rolling window for consistency calculation (trading days ≈ 1 year)
-ROLLING_WINDOW_DAYS = 252
-ROLLING_STEP_DAYS = 5
-
-# Categories that are too heterogeneous for meaningful peer comparison
-EXCLUDED_CATEGORIES = frozenset({"Equity Scheme - Sectoral/ Thematic"})
-
-# Categories where the primary benchmark has insufficient history
-# and we fall back to Nifty 50 as proxy
-BENCHMARK_FALLBACK_CATEGORIES = frozenset({
-    "Equity Scheme - Large & Mid Cap Fund",
-    "Equity Scheme - Multi Cap Fund",
-    "Equity Scheme - Flexi Cap Fund",
-    "Equity Scheme - ELSS",
-    "Equity Scheme - Value Fund",
-    "Equity Scheme - Focused Fund",
-    "Equity Scheme - Contra",
-})
+# Leaf helpers + tunable constants — extracted to ._util submodule.
+# Re-imported here so the existing module-internal references and any
+# external `from backend.investment_analytics.ranking import X` keep
+# working unchanged.
+from backend.investment_analytics.ranking._util import (
+    BENCHMARK_FALLBACK_CATEGORIES,
+    EXCLUDED_CATEGORIES,
+    MIN_ALIGNED_POINTS,
+    ROLLING_STEP_DAYS,
+    ROLLING_WINDOW_DAYS,
+    _align_to_common_dates,
+    _annualized_return,
+    _confidence_level,
+    _deduplicate_variants,
+    _scheme_base_name,
+    _VARIANT_SUFFIXES,
+    _years_between,
+)
 
 
 # ── Data structures ─────────────────────────────────────────────
@@ -113,37 +110,8 @@ class CategoryRanking:
 
 # ── Metric computation ──────────────────────────────────────────
 
-
-def _align_to_common_dates(
-    fund_records: List[dict],
-    bench_records: List[dict],
-) -> List[Tuple[date, float, float]]:
-    """Align fund and benchmark records to common dates.
-
-    Returns list of (date, fund_nav, bench_nav) tuples, sorted by date.
-    """
-    bench_map: Dict[str, float] = {r["date"]: r["nav"] for r in bench_records}
-    aligned = []
-    for r in fund_records:
-        d = r["date"]
-        if d in bench_map:
-            aligned.append((
-                date.fromisoformat(d),
-                r["nav"],
-                bench_map[d],
-            ))
-    aligned.sort(key=lambda x: x[0])
-    return aligned
-
-
-def _annualized_return(start_val: float, end_val: float, years: float) -> float:
-    if years <= 0 or start_val <= 0:
-        return 0.0
-    return (end_val / start_val) ** (1.0 / years) - 1.0
-
-
-def _years_between(start: date, end: date) -> float:
-    return (end - start).days / 365.25
+# _align_to_common_dates, _annualized_return, _years_between moved
+# to ._util; re-imported above.
 
 
 def _compute_metrics(
@@ -357,59 +325,9 @@ def _label_strengths_weaknesses(
     return strengths, weaknesses
 
 
-# ── Deduplication ───────────────────────────────────────────────
-
-import re
-
-_VARIANT_SUFFIXES = re.compile(
-    r"\s*-?\s*(?:Direct\s+Plan\s*-?\s*)?(?:Growth|Dividend\s+Reinvestment|Payout|IDCW\s+Reinvestment|IDCW\s+Payout).*$",
-    re.IGNORECASE,
-)
-
-
-def _scheme_base_name(name: str) -> str:
-    """Extract the base fund name by stripping plan/option suffixes."""
-    return _VARIANT_SUFFIXES.sub("", name).strip()
-
-
-def _deduplicate_variants(funds: List[SchemeEntry]) -> List[SchemeEntry]:
-    """Group funds by base name, keep one canonical entry per fund.
-
-    Priority: 'Direct Plan - Growth' > 'Direct Plan' > first seen.
-    """
-    groups: Dict[str, List[SchemeEntry]] = {}
-    for f in funds:
-        key = _scheme_base_name(f.scheme_name).lower()
-        groups.setdefault(key, []).append(f)
-
-    deduped: List[SchemeEntry] = []
-    for _key, variants in groups.items():
-        if len(variants) == 1:
-            deduped.append(variants[0])
-            continue
-        # Prefer the "Direct Plan - Growth" variant (no Dividend/IDCW/Payout)
-        preferred = [
-            v for v in variants
-            if "growth" in v.scheme_name.lower()
-            and "dividend" not in v.scheme_name.lower()
-            and "idcw" not in v.scheme_name.lower()
-            and "payout" not in v.scheme_name.lower()
-        ]
-        deduped.append(preferred[0] if preferred else variants[0])
-    return deduped
-
-
-# ── Confidence level ────────────────────────────────────────────
-
-
-def _confidence_level(history_years: float) -> str:
-    """Data confidence based on aligned history length."""
-    if history_years >= 10.0:
-        return "High"
-    elif history_years >= 5.0:
-        return "Medium"
-    else:
-        return "Low"
+# ── Deduplication + confidence level ────────────────────────────
+# _VARIANT_SUFFIXES, _scheme_base_name, _deduplicate_variants,
+# _confidence_level moved to ._util; re-imported above.
 
 
 # ── Main entry point ────────────────────────────────────────────
