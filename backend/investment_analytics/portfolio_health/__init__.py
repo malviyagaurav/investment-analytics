@@ -512,6 +512,7 @@ class ConcentrationWarning:
 # Shared leaf helpers — extracted to ._util so submodules can depend
 # on them without forming a cycle through __init__.py.
 from backend.investment_analytics.portfolio_health._util import (
+    _resolve_weights,
     _short_category,
 )
 
@@ -1066,20 +1067,7 @@ def _portfolio_status_label(
     return "Well diversified"
 
 
-def _resolve_weights(
-    holdings: List[FundHealthResult],
-    weights: Dict[int, float],
-) -> Dict[int, float]:
-    """Resolve per-holding weights, normalising user-supplied weights and
-    falling back to equal share when none are provided. Used by the
-    priority + flag enrichment helpers below."""
-    n = len(holdings) or 1
-    eq_weight = 1.0 / n
-    held_codes = {h.scheme_code for h in holdings}
-    held_weight_total = sum(weights.get(c, 0) for c in held_codes) or 0.0
-    if held_weight_total > 0:
-        return {c: weights.get(c, 0) / held_weight_total for c in held_codes}
-    return {c: eq_weight for c in held_codes}
+# _resolve_weights moved to ._util; re-exported above.
 
 
 def _build_action_priority(
