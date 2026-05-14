@@ -2,9 +2,13 @@
 
 Exercises the snapshot store + diff logic with mocked rank_*
 functions so the test never hits the network.
+
+AUDIT_PATH is redirected to a tempfile in every test that exercises
+run_snapshot — the live audit chain must never be touched by tests.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -154,10 +158,13 @@ class RunSnapshotTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self._orig_dir = wl.SNAPSHOTS_DIR
+        self._orig_audit = wl.AUDIT_PATH
         wl.SNAPSHOTS_DIR = Path(self.tmp.name) / "snapshots"
+        wl.AUDIT_PATH = Path(self.tmp.name) / "audit" / "audit.jsonl"
 
     def tearDown(self) -> None:
         wl.SNAPSHOTS_DIR = self._orig_dir
+        wl.AUDIT_PATH = self._orig_audit
         self.tmp.cleanup()
 
     def test_run_snapshot_writes_one_file_per_equity_category(self) -> None:
@@ -227,10 +234,13 @@ class RegistryValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self._orig_dir = wl.SNAPSHOTS_DIR
+        self._orig_audit = wl.AUDIT_PATH
         wl.SNAPSHOTS_DIR = Path(self.tmp.name) / "snapshots"
+        wl.AUDIT_PATH = Path(self.tmp.name) / "audit" / "audit.jsonl"
 
     def tearDown(self) -> None:
         wl.SNAPSHOTS_DIR = self._orig_dir
+        wl.AUDIT_PATH = self._orig_audit
         self.tmp.cleanup()
 
     def test_empty_registry_aborts_with_single_summary_entry(self) -> None:
@@ -301,6 +311,259 @@ class RegistryValidationTests(unittest.TestCase):
             )
         self.assertEqual(summary["Equity Scheme - Large Cap Fund"], "ok")
         self.assertNotIn("__registry__", summary)
+
+
+class WatchlistAuditEmissionTests(unittest.TestCase):
+    """Step 5: every run_snapshot invocation emits exactly one
+    watchlist_run audit event with a by-reference evidence file.
+    Fires on success AND on registry-abort. The evidence file must
+    land on disk BEFORE the audit ref is appended."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig_snap = wl.SNAPSHOTS_DIR
+        self._orig_audit = wl.AUDIT_PATH
+        wl.SNAPSHOTS_DIR = Path(self.tmp.name) / "snapshots"
+        wl.AUDIT_PATH = Path(self.tmp.name) / "audit" / "audit.jsonl"
+        self.data_dir = Path(self.tmp.name)
+        self.evidence_dir = self.data_dir / "evidence" / "watchlist_run"
+
+    def tearDown(self) -> None:
+        wl.SNAPSHOTS_DIR = self._orig_snap
+        wl.AUDIT_PATH = self._orig_audit
+        self.tmp.cleanup()
+
+    def _read_audit_records(self) -> list:
+        """Return the inner ``event`` dicts from each audit-chain line —
+        that's where ``event_type`` and all caller-supplied fields live."""
+        if not wl.AUDIT_PATH.exists():
+            return []
+        with wl.AUDIT_PATH.open("r", encoding="utf-8") as handle:
+            return [json.loads(line)["event"] for line in handle if line.strip()]
+
+    def _fake_rank(self, codes_in_order=None):
+        codes = codes_in_order or [101, 102, 103]
+
+        def _impl(category, _path):
+            return _ranking(category, codes)
+
+        return _impl
+
+    def test_successful_run_emits_one_watchlist_run_event(self) -> None:
+        cfg = {
+            "equity_categories": [
+                "Equity Scheme - Large Cap Fund",
+                "Equity Scheme - Mid Cap Fund",
+            ],
+            "debt_categories": [],
+            "include_gold": False,
+            "top_n_to_persist": 5,
+        }
+        with patch.object(wl, "rank_category", side_effect=self._fake_rank()), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date="2026-05-15")
+
+        records = self._read_audit_records()
+        watchlist_events = [r for r in records if r.get("event_type") == "watchlist_run"]
+        self.assertEqual(len(watchlist_events), 1,
+                         f"expected exactly 1 watchlist_run event, got {len(watchlist_events)}")
+
+    def test_audit_event_carries_lightweight_counts_and_errored_categories(self) -> None:
+        cfg = {
+            "equity_categories": [
+                "Equity Scheme - Large Cap Fund",
+                "Equity Scheme - Mid Cap Fund",
+                "Equity Scheme - Small Cap Fund",
+            ],
+            "debt_categories": ["Debt Scheme - Liquid Fund"],
+            "include_gold": True,
+            "top_n_to_persist": 5,
+        }
+
+        def equity(category, _path):
+            if "Mid Cap" in category:
+                raise ValueError("benchmark unavailable")
+            return _ranking(category, [101, 102, 103])
+
+        def debt(category, _path):
+            return _ranking(category, [201, 202])
+
+        def gold(_path):
+            return _ranking("Gold Fund (FoF)", [301, 302])
+
+        with patch.object(wl, "rank_category", side_effect=equity), \
+             patch.object(wl, "rank_debt_category", side_effect=debt), \
+             patch.object(wl, "rank_gold_funds", side_effect=gold), \
+             patch.object(wl, "debt_ranking_to_dict", side_effect=wl.ranking_to_dict), \
+             patch.object(wl, "gold_ranking_to_dict", side_effect=wl.ranking_to_dict), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date="2026-05-15")
+
+        records = self._read_audit_records()
+        watchlist_events = [r for r in records if r.get("event_type") == "watchlist_run"]
+        self.assertEqual(len(watchlist_events), 1)
+        ev = watchlist_events[0]
+        self.assertEqual(ev["snapshot_date"], "2026-05-15")
+        self.assertEqual(ev["equity_count"], 3)
+        self.assertEqual(ev["debt_count"], 1)
+        self.assertTrue(ev["gold_included"])
+        # 2 equity + 1 debt + 1 gold = 4 ok; 1 equity errored.
+        self.assertEqual(ev["ok_count"], 4)
+        self.assertEqual(ev["error_count"], 1)
+        self.assertEqual(ev["errored_categories"], ["Equity Scheme - Mid Cap Fund"])
+        self.assertIsNone(ev["registry_problem"])
+        self.assertEqual(ev["schema_version"], "v1")
+        # By-reference: heavy payload not inlined on the audit row.
+        self.assertNotIn("summary", ev)
+        self.assertNotIn("payload", ev)
+
+    def test_evidence_file_exists_and_payload_carries_full_summary(self) -> None:
+        cfg = {
+            "equity_categories": ["Equity Scheme - Large Cap Fund"],
+            "debt_categories": [],
+            "include_gold": False,
+            "top_n_to_persist": 5,
+        }
+        with patch.object(wl, "rank_category", side_effect=self._fake_rank()), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date="2026-05-15")
+
+        records = self._read_audit_records()
+        ev = next(r for r in records if r.get("event_type") == "watchlist_run")
+        ref = ev["evidence_ref"]
+        ev_file = self.data_dir / ref["path"]
+        self.assertTrue(ev_file.exists(), f"evidence file missing at {ev_file}")
+
+        envelope = json.loads(ev_file.read_text(encoding="utf-8"))
+        # Run ID consistency: audit and evidence file agree.
+        self.assertEqual(envelope["run_id"], ev["run_id"])
+        self.assertEqual(ev_file.name, f"{ev['run_id']}.json")
+        # Evidence_kind on the envelope.
+        self.assertEqual(envelope["evidence_kind"], "watchlist_run")
+        # Full summary lives in evidence payload, not on audit row.
+        payload = envelope["payload"]
+        self.assertEqual(payload["snapshot_date"], "2026-05-15")
+        self.assertEqual(
+            payload["summary"]["Equity Scheme - Large Cap Fund"], "ok"
+        )
+        self.assertEqual(
+            payload["config"]["equity_categories"],
+            ["Equity Scheme - Large Cap Fund"],
+        )
+
+    def test_evidence_ref_sha256_matches_file_bytes(self) -> None:
+        cfg = {
+            "equity_categories": ["Equity Scheme - Large Cap Fund"],
+            "debt_categories": [],
+            "include_gold": False,
+            "top_n_to_persist": 5,
+        }
+        with patch.object(wl, "rank_category", side_effect=self._fake_rank()), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date="2026-05-15")
+
+        ev = next(r for r in self._read_audit_records()
+                  if r.get("event_type") == "watchlist_run")
+        ref = ev["evidence_ref"]
+        ev_file = self.data_dir / ref["path"]
+        raw = ev_file.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), ref["sha256"])
+        self.assertEqual(len(raw), ref["size_bytes"])
+
+    def test_registry_abort_emits_event_with_registry_problem(self) -> None:
+        cfg = {
+            "equity_categories": ["X", "Y"],
+            "debt_categories": ["Z"],
+            "include_gold": True,
+            "top_n_to_persist": 5,
+        }
+        with patch.object(wl, "_validate_registry",
+                          return_value="registry has only 42 entries"):
+            summary = wl.run_snapshot(
+                config=cfg, registry_path="ignored", snapshot_date="2026-05-15",
+            )
+
+        self.assertIn("__registry__", summary)
+        records = self._read_audit_records()
+        watchlist_events = [r for r in records if r.get("event_type") == "watchlist_run"]
+        self.assertEqual(len(watchlist_events), 1)
+        ev = watchlist_events[0]
+        self.assertEqual(ev["registry_problem"], "registry has only 42 entries")
+        # Counts reflect what was configured, not what attempted.
+        self.assertEqual(ev["equity_count"], 2)
+        self.assertEqual(ev["debt_count"], 1)
+        self.assertTrue(ev["gold_included"])
+        # Nothing actually ran, so ok/errored both zero.
+        self.assertEqual(ev["ok_count"], 0)
+        self.assertEqual(ev["error_count"], 0)
+        self.assertEqual(ev["errored_categories"], [])
+        # Evidence file still produced with the abort summary.
+        ev_file = self.data_dir / ev["evidence_ref"]["path"]
+        envelope = json.loads(ev_file.read_text(encoding="utf-8"))
+        self.assertIn("__registry__", envelope["payload"]["summary"])
+
+    def test_cache_fingerprint_captured_on_inputs(self) -> None:
+        cfg = {
+            "equity_categories": ["Equity Scheme - Large Cap Fund"],
+            "debt_categories": [],
+            "include_gold": False,
+            "top_n_to_persist": 5,
+        }
+        with patch.object(wl, "rank_category", side_effect=self._fake_rank()), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date="2026-05-15")
+
+        ev = next(r for r in self._read_audit_records()
+                  if r.get("event_type") == "watchlist_run")
+        # cache_tracker was started — fingerprint is the sha256 of an
+        # empty read-set (deterministic non-null), not None.
+        self.assertIsNotNone(ev["inputs"]["cache_fingerprint"])
+        self.assertEqual(len(ev["inputs"]["cache_fingerprint"]), 64)
+        # And the same fingerprint shows up in the evidence envelope.
+        ev_file = self.data_dir / ev["evidence_ref"]["path"]
+        envelope = json.loads(ev_file.read_text(encoding="utf-8"))
+        self.assertEqual(
+            envelope["inputs"]["cache_fingerprint"],
+            ev["inputs"]["cache_fingerprint"],
+        )
+
+    def test_evidence_file_written_before_audit_append(self) -> None:
+        """Ordering invariant: if emit_evidence wrote the audit row
+        without writing the evidence file first, a reader would see
+        an audit row pointing at a missing file. Verify both exist
+        and the path on the audit row resolves."""
+        cfg = {
+            "equity_categories": ["Equity Scheme - Large Cap Fund"],
+            "debt_categories": [],
+            "include_gold": False,
+            "top_n_to_persist": 5,
+        }
+        with patch.object(wl, "rank_category", side_effect=self._fake_rank()), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date="2026-05-15")
+
+        ev = next(r for r in self._read_audit_records()
+                  if r.get("event_type") == "watchlist_run")
+        # Audit row exists AND points at a real file.
+        self.assertTrue((self.data_dir / ev["evidence_ref"]["path"]).is_file())
+
+    def test_cache_tracker_stopped_after_run(self) -> None:
+        cfg = {
+            "equity_categories": ["Equity Scheme - Large Cap Fund"],
+            "debt_categories": [],
+            "include_gold": False,
+            "top_n_to_persist": 5,
+        }
+        from backend.data_discovery import cache_tracker
+        # Ensure clean state going in (defensive — prior test leaks
+        # would otherwise pass this silently).
+        cache_tracker.stop_tracking()
+        self.assertFalse(cache_tracker.is_active())
+        with patch.object(wl, "rank_category", side_effect=self._fake_rank()), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date="2026-05-15")
+        # Tracker stopped via finally even on success path.
+        self.assertFalse(cache_tracker.is_active())
 
 
 if __name__ == "__main__":  # pragma: no cover

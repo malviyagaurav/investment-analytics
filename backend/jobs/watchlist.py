@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.data_discovery import cache_tracker
+from backend.evidence.store import emit_evidence
 from backend.investment_analytics.ranking import (
     DEFAULT_DEBT_CATEGORIES,
     EXCLUDED_CATEGORIES,
@@ -45,6 +47,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_CONFIG_PATH = ROOT / "data" / "watchlist" / "categories.json"
 SNAPSHOTS_DIR = ROOT / "data" / "snapshots"
 REGISTRY_PATH = ROOT / "data" / "registry" / "schemes.json"
+AUDIT_PATH = ROOT / "data" / "audit" / "audit.jsonl"
 
 
 # ── Config ───────────────────────────────────────────────────────────
@@ -174,6 +177,63 @@ def _validate_registry(registry_path: str) -> Optional[str]:
     return None
 
 
+def _emit_watchlist_audit(
+    snap_date: str,
+    cfg: Dict[str, Any],
+    reg: str,
+    summary: Dict[str, str],
+    registry_problem: Optional[str],
+) -> None:
+    """Emit one watchlist_run audit + evidence event per run_snapshot
+    invocation. Fired on success AND on registry-abort so the cron
+    job is never silently invisible to the audit chain."""
+    equity_cats = list(cfg.get("equity_categories", []))
+    debt_cats = list(cfg.get("debt_categories", []))
+    gold_included = bool(cfg.get("include_gold", False))
+
+    # Per-category outcomes only — strip the synthetic __registry__
+    # key used by the abort path so counts reflect real categories.
+    category_outcomes = {k: v for k, v in summary.items() if k != "__registry__"}
+    ok_count = sum(1 for v in category_outcomes.values() if v == "ok")
+    errored_categories = sorted(
+        k for k, v in category_outcomes.items() if v != "ok"
+    )
+    error_count = len(errored_categories)
+
+    audit_event = {
+        "event_type": "watchlist_run",
+        "snapshot_date": snap_date,
+        "equity_count": len(equity_cats),
+        "debt_count": len(debt_cats),
+        "gold_included": gold_included,
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "errored_categories": errored_categories,
+        "registry_problem": registry_problem,
+        "schema_version": "v1",
+    }
+
+    payload = {
+        "snapshot_date": snap_date,
+        "config": {
+            "equity_categories": equity_cats,
+            "debt_categories": debt_cats,
+            "include_gold": gold_included,
+            "top_n_to_persist": int(cfg.get("top_n_to_persist", 10)),
+        },
+        "summary": summary,
+        "registry_path": str(reg),
+        "snapshots_dir": str(SNAPSHOTS_DIR),
+    }
+
+    emit_evidence(
+        audit_log_path=AUDIT_PATH,
+        evidence_kind="watchlist_run",
+        audit_event=audit_event,
+        payload=payload,
+    )
+
+
 def run_snapshot(
     config: Optional[Dict[str, Any]] = None,
     registry_path: Optional[str] = None,
@@ -187,6 +247,12 @@ def run_snapshot(
     "registry_error" summary entry instead of producing dozens of
     per-category errors that obscure the real problem.
 
+    Emits exactly one ``watchlist_run`` audit event per invocation
+    (success OR registry-abort), with the full per-category summary
+    persisted by-reference under ``data/evidence/watchlist_run/``.
+    Cache reads during the run are aggregated into a single
+    ``cache_fingerprint`` recorded on the audit row's provenance.
+
     Returns a summary {category -> "ok" | error_message}.
     """
     cfg = config if config is not None else load_config()
@@ -195,52 +261,64 @@ def run_snapshot(
     top_n = int(cfg.get("top_n_to_persist", 10))
 
     summary: Dict[str, str] = {}
+    registry_problem: Optional[str] = None
 
-    registry_problem = _validate_registry(reg)
-    if registry_problem is not None:
-        logger.error("Watchlist run aborted: %s", registry_problem)
-        summary["__registry__"] = f"error: {registry_problem}"
-        return summary
+    cache_tracker.start_tracking()
+    try:
+        registry_problem = _validate_registry(reg)
+        if registry_problem is not None:
+            logger.error("Watchlist run aborted: %s", registry_problem)
+            summary["__registry__"] = f"error: {registry_problem}"
+        else:
+            for cat in cfg.get("equity_categories", []):
+                if cat in EXCLUDED_CATEGORIES:
+                    summary[cat] = "excluded by ranking policy"
+                    continue
+                try:
+                    result = rank_category(cat, reg)
+                    payload = ranking_to_dict(result)
+                    payload["snapshot_date"] = snap_date
+                    payload["snapshot_kind"] = "equity"
+                    save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
+                    summary[cat] = "ok"
+                except Exception as exc:
+                    logger.warning("equity rank failed for %s: %s", cat, exc)
+                    summary[cat] = f"error: {exc}"
 
-    for cat in cfg.get("equity_categories", []):
-        if cat in EXCLUDED_CATEGORIES:
-            summary[cat] = "excluded by ranking policy"
-            continue
-        try:
-            result = rank_category(cat, reg)
-            payload = ranking_to_dict(result)
-            payload["snapshot_date"] = snap_date
-            payload["snapshot_kind"] = "equity"
-            save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
-            summary[cat] = "ok"
-        except Exception as exc:
-            logger.warning("equity rank failed for %s: %s", cat, exc)
-            summary[cat] = f"error: {exc}"
+            for cat in cfg.get("debt_categories", []):
+                try:
+                    result = rank_debt_category(cat, reg)
+                    payload = debt_ranking_to_dict(result)
+                    payload["snapshot_date"] = snap_date
+                    payload["snapshot_kind"] = "debt"
+                    save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
+                    summary[cat] = "ok"
+                except Exception as exc:
+                    logger.warning("debt rank failed for %s: %s", cat, exc)
+                    summary[cat] = f"error: {exc}"
 
-    for cat in cfg.get("debt_categories", []):
-        try:
-            result = rank_debt_category(cat, reg)
-            payload = debt_ranking_to_dict(result)
-            payload["snapshot_date"] = snap_date
-            payload["snapshot_kind"] = "debt"
-            save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
-            summary[cat] = "ok"
-        except Exception as exc:
-            logger.warning("debt rank failed for %s: %s", cat, exc)
-            summary[cat] = f"error: {exc}"
+            if cfg.get("include_gold", False):
+                cat = "Gold Fund (FoF)"
+                try:
+                    result = rank_gold_funds(reg)
+                    payload = gold_ranking_to_dict(result)
+                    payload["snapshot_date"] = snap_date
+                    payload["snapshot_kind"] = "gold"
+                    save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
+                    summary[cat] = "ok"
+                except Exception as exc:
+                    logger.warning("gold rank failed: %s", exc)
+                    summary[cat] = f"error: {exc}"
 
-    if cfg.get("include_gold", False):
-        cat = "Gold Fund (FoF)"
-        try:
-            result = rank_gold_funds(reg)
-            payload = gold_ranking_to_dict(result)
-            payload["snapshot_date"] = snap_date
-            payload["snapshot_kind"] = "gold"
-            save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
-            summary[cat] = "ok"
-        except Exception as exc:
-            logger.warning("gold rank failed: %s", exc)
-            summary[cat] = f"error: {exc}"
+        _emit_watchlist_audit(
+            snap_date=snap_date,
+            cfg=cfg,
+            reg=reg,
+            summary=summary,
+            registry_problem=registry_problem,
+        )
+    finally:
+        cache_tracker.stop_tracking()
 
     return summary
 
