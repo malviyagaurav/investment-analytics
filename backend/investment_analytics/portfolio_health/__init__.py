@@ -118,183 +118,8 @@ def _assign_action(status: str, has_alternatives: bool) -> Tuple[str, str]:
         return "Monitor", "Could not be ranked"
 
 
-# ── Switch justification ──────────────────────────────────────
-
-# Material-improvement thresholds for the alternative-filter gate.
-# Calibrated to "would a thoughtful investor actually feel this delta
-# in net returns over a 3-5y horizon?" Conservative on equity (high
-# cross-sectional dispersion) and tighter on debt (compressed yields).
-# delta_for_moderate must be exceeded for a metric to be "material";
-# delta_for_large for a "large" magnitude tag.
-_ALT_THRESHOLDS = {
-    "equity": {
-        # key: (moderate_delta, large_delta) — units = same as the metric
-        "excess_return_pct":      (1.5,  3.0),   # +pp CAGR vs benchmark
-        "consistency_pct":        (10.0, 20.0),  # +pp rolling-window wins
-        "max_drawdown_pct":       (5.0,  10.0),  # pp shallower (alt - held > 0)
-        "volatility_pct":         (1.5,  3.0),   # pp lower
-        "downside_capture_ratio": (0.10, 0.20),  # ratio — lower better
-    },
-    "debt": {
-        "cagr_pct":               (0.75, 1.5),
-        "consistency_pct":        (5.0,  10.0),
-        "max_drawdown_pct":       (1.5,  3.0),
-        "volatility_pct":         (0.5,  1.0),
-        "risk_adj_return":        (0.5,  1.0),
-    },
-}
-
-
-def _improvement_magnitude(metric_key: str, delta: float, asset_class: str) -> str:
-    """Bucket a per-metric improvement delta into 'large' / 'moderate' / 'small'.
-
-    delta MUST be expressed as 'alt-better-than-held' in the metric's
-    natural direction (positive = better). Returns 'none' if the alt is
-    not better, 'small' if better but below the moderate threshold.
-    """
-    if delta <= 0:
-        return "none"
-    bands = _ALT_THRESHOLDS.get(asset_class, {}).get(metric_key)
-    if bands is None:
-        return "small"
-    moderate, large = bands
-    if delta >= large:
-        return "large"
-    if delta >= moderate:
-        return "moderate"
-    return "small"
-
-
-def _signed_delta(metric_key: str, held_val: float, alt_val: float) -> float:
-    """Return alt-vs-held delta in the metric's natural 'better' direction.
-
-    Positive delta means alt is better than held.
-    """
-    # Metrics where higher is better.
-    if metric_key in {"excess_return_pct", "consistency_pct", "cagr_pct",
-                      "risk_adj_return"}:
-        return alt_val - held_val
-    # Drawdown is stored as negative; less-negative = shallower = better.
-    if metric_key == "max_drawdown_pct":
-        return alt_val - held_val
-    # Lower-is-better.
-    if metric_key in {"volatility_pct", "downside_capture_ratio"}:
-        return held_val - alt_val
-    return 0.0
-
-
-_EQUITY_BULLETS: Tuple[Tuple[str, str], ...] = (
-    ("consistency_pct",        "Better consistency vs benchmark"),
-    ("max_drawdown_pct",       "Shallower drawdowns"),
-    ("volatility_pct",         "Lower volatility"),
-    ("downside_capture_ratio", "Better downside protection"),
-    ("excess_return_pct",      "Historically higher return than peers"),
-)
-_DEBT_BULLETS: Tuple[Tuple[str, str], ...] = (
-    ("cagr_pct",         "Historically higher return"),
-    ("volatility_pct",   "Lower volatility"),
-    ("max_drawdown_pct", "Shallower drawdowns"),
-    ("risk_adj_return",  "Better risk-adjusted return"),
-)
-
-
-def _build_justification(
-    held_metrics: Dict[str, Any],
-    alt_metrics: Dict[str, Any],
-    asset_class: str,
-) -> List[Dict[str, str]]:
-    """Build factual justification for why an alternative ranks higher.
-
-    Returns list of {"reason": ..., "magnitude": small/moderate/large}.
-    No percentage claims, no predictions. UI maps magnitude to display.
-    """
-    bullets = _EQUITY_BULLETS if asset_class == "equity" else _DEBT_BULLETS
-    out: List[Dict[str, str]] = []
-    for key, label in bullets:
-        h = held_metrics.get(key, 0) or 0
-        a = alt_metrics.get(key, 0) or 0
-        delta = _signed_delta(key, h, a)
-        if delta <= 0:
-            continue
-        out.append({
-            "reason": label,
-            "magnitude": _improvement_magnitude(key, delta, asset_class),
-            "metric": key,
-        })
-    return out
-
-
-def _alternative_is_material(
-    held_metrics: Dict[str, Any],
-    alt_metrics: Dict[str, Any],
-    asset_class: str,
-) -> bool:
-    """Gate: an alternative must beat held on >=3 metrics AND show at
-    least one moderate-or-large improvement to be surfaced.
-
-    Without this gate the system would suggest rank-N+1 funds whose
-    advantage is statistically indistinguishable from rank-N — pure
-    churn-encouragement. The 3-of-5 wins requirement mirrors the
-    pairwise-dominance rule already used in ranking.py.
-    """
-    bullets = _EQUITY_BULLETS if asset_class == "equity" else _DEBT_BULLETS
-    wins = 0
-    has_material = False
-    for key, _label in bullets:
-        h = held_metrics.get(key, 0) or 0
-        a = alt_metrics.get(key, 0) or 0
-        delta = _signed_delta(key, h, a)
-        if delta > 0:
-            wins += 1
-            mag = _improvement_magnitude(key, delta, asset_class)
-            if mag in ("moderate", "large"):
-                has_material = True
-    return wins >= 3 and has_material
-
-
-def _build_your_fund_gaps(
-    held_metrics: Dict[str, Any],
-    top_alt_metrics: Dict[str, Any],
-    asset_class: str,
-) -> List[str]:
-    """Build personal comparison: what YOUR fund is weaker at vs the top alternative.
-
-    Inverse of _build_justification — framed from user's fund perspective.
-    """
-    gaps: List[str] = []
-
-    if asset_class == "equity":
-        h_cons = held_metrics.get("consistency_pct", 0) or 0
-        a_cons = top_alt_metrics.get("consistency_pct", 0) or 0
-        if a_cons > h_cons:
-            gaps.append("Lower consistency than top-ranked peer")
-
-        h_dd = held_metrics.get("max_drawdown_pct", 0) or 0
-        a_dd = top_alt_metrics.get("max_drawdown_pct", 0) or 0
-        if a_dd > h_dd:
-            gaps.append("Deeper drawdowns than top-ranked peer")
-
-        h_vol = held_metrics.get("volatility_pct", 0) or 0
-        a_vol = top_alt_metrics.get("volatility_pct", 0) or 0
-        if a_vol < h_vol:
-            gaps.append("Higher volatility than top-ranked peer")
-    else:
-        h_cagr = held_metrics.get("cagr_pct", 0) or 0
-        a_cagr = top_alt_metrics.get("cagr_pct", 0) or 0
-        if a_cagr > h_cagr:
-            gaps.append("Lower historical return than top-ranked peer")
-
-        h_vol = held_metrics.get("volatility_pct", 0) or 0
-        a_vol = top_alt_metrics.get("volatility_pct", 0) or 0
-        if a_vol < h_vol:
-            gaps.append("Higher volatility than top-ranked peer")
-
-        h_dd = held_metrics.get("max_drawdown_pct", 0) or 0
-        a_dd = top_alt_metrics.get("max_drawdown_pct", 0) or 0
-        if a_dd > h_dd:
-            gaps.append("Deeper drawdowns than top-ranked peer")
-
-    return gaps
+# ── Switch justification + alternative gate ─────────────────────
+# Moved to .alternatives submodule. Re-exported below.
 
 
 # ── Portfolio mistake detector ─────────────────────────────────
@@ -699,6 +524,22 @@ from backend.investment_analytics.portfolio_health.coverage import (
     _build_coverage_report,
 )
 
+# Alternative-selection gate, justification, metric-gap helpers
+# — extracted to .alternatives submodule.
+from backend.investment_analytics.portfolio_health.alternatives import (
+    _ALT_THRESHOLDS,
+    _DEBT_BULLETS,
+    _EQUITY_BULLETS,
+    _alternative_is_material,
+    _build_alternatives,
+    _build_justification,
+    _build_your_fund_gaps,
+    _improvement_magnitude,
+    _metrics_for_display,
+    _primary_metric_gap,
+    _signed_delta,
+)
+
 
 @dataclass
 class PortfolioHealthResult:
@@ -768,108 +609,8 @@ def _find_fund_in_ranking(
     return None
 
 
-def _build_alternatives(
-    ranked_funds: List[RankedFund],
-    exclude_code: int,
-    asset_class: str,
-    held_metrics: Optional[Dict[str, Any]] = None,
-    max_n: int = 3,
-    unsafe_codes: Optional[set] = None,
-) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-    """Get top N alternatives from the same category, excluding the held fund.
-
-    Skips funds with Low confidence, funds in `unsafe_codes` (severe data
-    quality / extreme outlier), and funds whose advantage over the held
-    fund is not material per `_alternative_is_material`. Without the
-    materiality gate the function would suggest rank-N+1 funds with
-    statistically-indistinguishable improvements, encouraging churn.
-
-    When held_metrics is omitted (the legacy path used for Not-Ranked
-    holdings where we have no metrics to compare against), the gate is
-    skipped — we just show the top-of-category as a reference list.
-
-    Returns (alts, filter_stats) where filter_stats counts WHY peers
-    were dropped: {"low_conf", "unsafe", "immaterial", "considered"}.
-    The caller uses these counts to emit an accurate action_note when
-    `alts` is empty — distinguishing "data thin" from "no peer is
-    materially better" (OBS-2).
-    """
-    if unsafe_codes is None:
-        unsafe_codes = set()
-    alts: List[Dict[str, Any]] = []
-    stats: Dict[str, int] = {
-        "low_conf": 0,    # peers dropped because confidence == Low
-        "unsafe": 0,      # peers dropped because of severe DQ / outlier
-        "immaterial": 0,  # peers dropped by the material-improvement gate
-        "considered": 0,  # peers that survived data filters (gate-eligible)
-    }
-    for rf in ranked_funds:
-        if rf.fund.scheme_code == exclude_code:
-            continue
-        if rf.confidence_level == "Low":
-            stats["low_conf"] += 1
-            continue
-        if rf.fund.scheme_code in unsafe_codes:
-            stats["unsafe"] += 1
-            continue
-
-        stats["considered"] += 1
-        alt_metrics_full = _metrics_for_display(rf.fund, asset_class)
-
-        # Materiality gate — only when we can compare against the held fund.
-        if held_metrics and not _alternative_is_material(
-            held_metrics, alt_metrics_full, asset_class
-        ):
-            stats["immaterial"] += 1
-            continue
-
-        alt: Dict[str, Any] = {
-            "rank": rf.rank,
-            "scheme_code": rf.fund.scheme_code,
-            "fund_name": rf.fund.fund_name,
-            "fund_house": rf.fund.fund_house,
-            "confidence_level": rf.confidence_level,
-        }
-        # Expose the full metric set so the UI can render side-by-side
-        # comparisons (UI-7) without re-fetching peer data.
-        alt["metrics"] = alt_metrics_full
-        if asset_class == "equity":
-            alt["excess_return_pct"] = rf.fund.excess_return_pct
-            alt["consistency_pct"] = rf.fund.consistency_pct
-        else:
-            alt["cagr_pct"] = rf.fund.fund_cagr_pct
-            alt["volatility_pct"] = rf.fund.volatility_pct
-
-        # Justification: why this alternative ranks higher (with magnitude).
-        if held_metrics:
-            alt["justification"] = _build_justification(held_metrics, alt_metrics_full, asset_class)
-        else:
-            alt["justification"] = []
-
-        alts.append(alt)
-        if len(alts) >= max_n:
-            break
-    return alts, stats
-
-
-def _metrics_for_display(fund: Any, asset_class: str) -> Dict[str, Any]:
-    """Extract display-ready metrics from a FundMetrics object."""
-    if asset_class == "equity":
-        return {
-            "excess_return_pct": fund.excess_return_pct,
-            "consistency_pct": fund.consistency_pct,
-            "max_drawdown_pct": fund.max_drawdown_pct,
-            "volatility_pct": fund.volatility_pct,
-            "downside_capture_ratio": fund.downside_capture_ratio,
-        }
-    else:
-        return {
-            "cagr_pct": fund.fund_cagr_pct,
-            "volatility_pct": fund.volatility_pct,
-            "max_drawdown_pct": fund.max_drawdown_pct,
-            "consistency_pct": fund.consistency_pct,
-            "risk_adj_return": fund.downside_capture_ratio,
-        }
+# _build_alternatives, _metrics_for_display moved to .alternatives;
+# re-exported below.
 
 
 def check_portfolio_health(
@@ -1435,39 +1176,7 @@ def _build_structural_priority(
     }
 
 
-def _primary_metric_gap(
-    held_metrics: Dict[str, Any],
-    top_metrics: Dict[str, Any],
-    asset_class: str,
-) -> Optional[Dict[str, Any]]:
-    """Pick the single largest improvement metric and return its delta
-    + magnitude bucket. Used to quantify the gap between a held fund
-    and the rank-1 fund in its category, so "top-ranked exists" turns
-    from a label into a quantified observation."""
-    bullets = _EQUITY_BULLETS if asset_class == "equity" else _DEBT_BULLETS
-    best: Optional[Dict[str, Any]] = None
-    for key, label in bullets:
-        h_val = held_metrics.get(key, 0) or 0
-        t_val = top_metrics.get(key, 0) or 0
-        delta = _signed_delta(key, h_val, t_val)
-        if delta <= 0:
-            continue
-        magnitude = _improvement_magnitude(key, delta, asset_class)
-        rank = {"large": 3, "moderate": 2, "small": 1}.get(magnitude, 0)
-        if best is None or rank > best["_rank"]:
-            best = {
-                "metric": key,
-                "label": label,
-                "held_value": round(h_val, 2),
-                "top_value": round(t_val, 2),
-                "delta": round(abs(delta), 2),
-                "magnitude": magnitude,
-                "_rank": rank,
-            }
-    if best is None:
-        return None
-    best.pop("_rank", None)
-    return best
+# _primary_metric_gap moved to .alternatives; re-exported below.
 
 
 def _collect_top_ranked_per_category(
