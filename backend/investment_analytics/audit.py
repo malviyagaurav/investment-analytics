@@ -1,17 +1,37 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Serializes the read-prev-hash → write-record critical section so
-# concurrent FastAPI handlers in the same process cannot interleave
-# writes and break the hash chain. Process-local: if you ever scale
-# to multiple uvicorn workers you must replace this with an
-# OS-level file lock or a dedicated audit writer service.
+# Two-layer locking on the read-prev-hash → write-record critical
+# section so concurrent appenders cannot interleave and corrupt the
+# hash chain:
+#   1. _APPEND_LOCK (threading.Lock) — fast path for same-process
+#      contention (e.g. concurrent FastAPI handlers on a single
+#      uvicorn worker).
+#   2. fcntl.flock on the open audit file — cross-process
+#      serialization (FastAPI + cron-driven watchlist + ad-hoc CLI
+#      all appending to the same log).
+#
+# fsync runs INSIDE the flock so the record is durable before any
+# other writer is allowed to observe its hash. Releasing the lock
+# pre-fsync would create a visibility/durability split: process B
+# could read a hash whose backing record has not yet hit the disk.
+#
+# IMPORTANT — scope of the guarantee:
+#   fcntl.flock serializes ONLY between cooperating local processes
+#   on the same machine, on a local filesystem. It is NOT a
+#   distributed lock. It is NOT safe across NFS / SMB / network
+#   filesystems (the semantics there are unspecified or broken on
+#   most kernels). Single-machine single-user is the supported
+#   deployment per the architecture memo; do NOT generalize this
+#   guarantee to multi-host setups.
 _APPEND_LOCK = threading.Lock()
 
 PII_KEYS = {
@@ -73,21 +93,28 @@ def append_audit_record(path: Path, event: dict[str, Any]) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     sanitized_event = sanitize_audit_event(event)
     payload_hash = _sha256(_canonical_json(sanitized_event))
-    # Read-prev-hash through to write must be atomic; otherwise two
-    # callers can both observe the same prev_hash and corrupt the chain.
+    # Critical section: thread-lock first (fast same-process path),
+    # then fcntl.flock on the open handle for cross-process safety.
+    # fsync is inside the flock — see module docstring.
     with _APPEND_LOCK:
-        previous_hash = _last_record_hash(path)
-        record = {
-            "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            "schema_version": "v1",
-            "analyzer_version": "mf_v2",
-            "prev_hash": previous_hash,
-            "payload_hash": payload_hash,
-            "event": sanitized_event,
-        }
-        record["current_hash"] = _sha256(_canonical_json(record))
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(_canonical_json(record) + "\n")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                previous_hash = _last_record_hash(path)
+                record = {
+                    "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                    "schema_version": "v1",
+                    "analyzer_version": "mf_v2",
+                    "prev_hash": previous_hash,
+                    "payload_hash": payload_hash,
+                    "event": sanitized_event,
+                }
+                record["current_hash"] = _sha256(_canonical_json(record))
+                handle.write(_canonical_json(record) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     return record
 
 
