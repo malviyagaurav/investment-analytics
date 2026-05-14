@@ -915,10 +915,22 @@ def check_portfolio_health(
         w = 1.0 / len(scheme_codes) if scheme_codes else 0.0
         weights = {code: w for code in scheme_codes}
 
-    # Normalize weights to sum to 1
+    # Normalize weights to sum to 1. If the caller supplied weights
+    # that sum to zero (every holding marked 0.0, or only NaN/None
+    # entries), fall back to equal weights — otherwise downstream
+    # capital-weighted views silently render every metric as zero
+    # and the user sees "no concentration / no priority" with no
+    # explanation that the input was malformed.
     total_weight = sum(weights.get(c, 0) for c in scheme_codes)
     if total_weight > 0:
         weights = {c: weights.get(c, 0) / total_weight for c in scheme_codes}
+    elif scheme_codes:
+        eq_w = 1.0 / len(scheme_codes)
+        weights = {c: eq_w for c in scheme_codes}
+        logger.warning(
+            "Supplied weights sum to zero; falling back to equal weights "
+            "for %d holdings.", len(scheme_codes),
+        )
 
     holdings: List[FundHealthResult] = []
     not_found: List[Dict[str, Any]] = []

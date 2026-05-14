@@ -766,6 +766,28 @@ class CompressionLayerTests(unittest.TestCase):
         _, out = self._run([2003], registry)
         self.assertIsNone(out["structural_priority"])
 
+    def test_zero_sum_weights_fall_back_to_equal(self) -> None:
+        """Audit fix: weights that sum to zero must not silently leave
+        every capital-weighted view at zero. Fall back to equal weights
+        and log a warning."""
+        cat = "Equity Scheme - Large Cap Fund"
+        registry = [
+            _Scheme(2001, "Top Direct Plan - Growth", cat, "AMC X"),
+            _Scheme(2003, "Mid Direct Plan - Growth", cat, "AMC Y"),
+        ]
+        # Both weights zero — caller likely passed bad input.
+        weights = {2001: 0.0, 2003: 0.0}
+        _, out = self._run([2001, 2003], registry, weights=weights)
+        # decision_summary entries must carry NON-zero weight_pct (equal
+        # share fallback puts each at 50%).
+        for bucket in ("Continue", "Monitor", "Review"):
+            for entry in out["decision_summary"][bucket]:
+                self.assertGreater(
+                    entry["weight_pct"], 0.0,
+                    f"zero-sum weights must trigger equal-fallback "
+                    f"(got weight_pct={entry['weight_pct']} for {entry['scheme_code']})",
+                )
+
     def test_plan_flag_carries_weight_pct(self) -> None:
         cat = "Equity Scheme - Large Cap Fund"
         registry = [

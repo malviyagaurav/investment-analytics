@@ -2405,6 +2405,11 @@ function renderPortfolioHealth(data) {
   priorities.sort(function(a, b) { return b.weight - a.weight; });
   priorities.forEach(function(p) {
     var apBox = el('article', 'insight health-action-priority ' + p.cls);
+    // role=note (not "alert" — these aren't urgent interruptions) +
+    // aria-label that screen readers will announce, so the headline
+    // is not just generic span content.
+    apBox.setAttribute('role', 'note');
+    apBox.setAttribute('aria-label', p.headline);
     apBox.appendChild(el('span', 'ap-icon', p.icon));
     apBox.appendChild(el('span', 'ap-headline', p.headline));
     insightsEl.appendChild(apBox);
@@ -2739,12 +2744,17 @@ function _renderHeldVsAltMetrics(h, a) {
     if (kind === 'diff') return fmtDiff(v);
     return fmtPct(v);
   }
+  // Defensive: h.metrics is currently always populated when h.rank > 0,
+  // but we read both sides through optional access to survive any
+  // future schema drift gracefully (renders '—' instead of crashing).
+  var heldM = h && h.metrics ? h.metrics : {};
+  var altM = a.metrics || {};
   var grid = el('div', 'health-side-by-side');
   spec.forEach(function(s) {
     var row = el('div', 'sbs-row');
     row.appendChild(el('span', 'sbs-label', s.label));
-    row.appendChild(el('span', 'sbs-yours', 'You: ' + fmt(h.metrics ? h.metrics[s.key] : null, s.fmt)));
-    row.appendChild(el('span', 'sbs-alt', 'Alt: ' + fmt(a.metrics[s.key], s.fmt)));
+    row.appendChild(el('span', 'sbs-yours', 'You: ' + fmt(heldM[s.key], s.fmt)));
+    row.appendChild(el('span', 'sbs-alt', 'Alt: ' + fmt(altM[s.key], s.fmt)));
     grid.appendChild(row);
   });
   return grid;

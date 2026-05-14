@@ -145,6 +145,35 @@ def _trim_for_snapshot(category_dict: Dict[str, Any], top_n: int) -> Dict[str, A
     return out
 
 
+MIN_REGISTRY_ENTRIES = 500  # AMFI returns ~10k schemes; <500 means a parse failure
+
+
+def _validate_registry(registry_path: str) -> Optional[str]:
+    """Return None if the registry file is loadable and contains a
+    plausible number of schemes; otherwise return a one-line error
+    message. Stops the runner from producing a wave of per-category
+    'category has fewer than 2 funds' errors when the real problem is
+    a missing or corrupt registry."""
+    from backend.data_discovery.registry import load_registry  # local import
+
+    try:
+        entries = load_registry(Path(registry_path))
+    except Exception as exc:
+        return f"registry load failed: {exc}"
+    n = len(entries)
+    if n == 0:
+        return (
+            f"registry at {registry_path} is empty — "
+            f"run POST /discover/refresh-registry before scheduling snapshots"
+        )
+    if n < MIN_REGISTRY_ENTRIES:
+        return (
+            f"registry at {registry_path} has only {n} entries "
+            f"(<{MIN_REGISTRY_ENTRIES}); likely parse failure or partial download"
+        )
+    return None
+
+
 def run_snapshot(
     config: Optional[Dict[str, Any]] = None,
     registry_path: Optional[str] = None,
@@ -152,6 +181,11 @@ def run_snapshot(
 ) -> Dict[str, Any]:
     """Re-rank every category in the watchlist; persist top-N per
     category to data/snapshots/<safe_category>/<YYYY-MM-DD>.json.
+
+    Validates the registry up-front. If the registry is missing,
+    empty, or implausibly small, returns immediately with a single
+    "registry_error" summary entry instead of producing dozens of
+    per-category errors that obscure the real problem.
 
     Returns a summary {category -> "ok" | error_message}.
     """
@@ -161,6 +195,12 @@ def run_snapshot(
     top_n = int(cfg.get("top_n_to_persist", 10))
 
     summary: Dict[str, str] = {}
+
+    registry_problem = _validate_registry(reg)
+    if registry_problem is not None:
+        logger.error("Watchlist run aborted: %s", registry_problem)
+        summary["__registry__"] = f"error: {registry_problem}"
+        return summary
 
     for cat in cfg.get("equity_categories", []):
         if cat in EXCLUDED_CATEGORIES:

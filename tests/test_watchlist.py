@@ -174,7 +174,8 @@ class RunSnapshotTests(unittest.TestCase):
         def fake_rank(category, _registry_path):
             return _ranking(category, [101, 102, 103, 104, 105])
 
-        with patch.object(wl, "rank_category", side_effect=fake_rank):
+        with patch.object(wl, "rank_category", side_effect=fake_rank), \
+             patch.object(wl, "_validate_registry", return_value=None):
             summary = wl.run_snapshot(
                 config=cfg, registry_path="ignored", snapshot_date="2026-05-06",
             )
@@ -206,7 +207,8 @@ class RunSnapshotTests(unittest.TestCase):
                 raise ValueError("benchmark unavailable")
             return _ranking(category, [101, 102, 103])
 
-        with patch.object(wl, "rank_category", side_effect=fake_rank):
+        with patch.object(wl, "rank_category", side_effect=fake_rank), \
+             patch.object(wl, "_validate_registry", return_value=None):
             summary = wl.run_snapshot(
                 config=cfg, registry_path="ignored", snapshot_date="2026-05-06",
             )
@@ -215,6 +217,90 @@ class RunSnapshotTests(unittest.TestCase):
         # Successful category still got persisted; failing one didn't.
         self.assertIsNotNone(wl.load_snapshot("Equity Scheme - Large Cap Fund", "2026-05-06"))
         self.assertIsNone(wl.load_snapshot("Equity Scheme - Mid Cap Fund", "2026-05-06"))
+
+
+class RegistryValidationTests(unittest.TestCase):
+    """Audit fix: watchlist runner aborts early on missing / corrupt
+    / undersized registry rather than producing N per-category errors
+    that obscure the real problem."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig_dir = wl.SNAPSHOTS_DIR
+        wl.SNAPSHOTS_DIR = Path(self.tmp.name) / "snapshots"
+
+    def tearDown(self) -> None:
+        wl.SNAPSHOTS_DIR = self._orig_dir
+        self.tmp.cleanup()
+
+    def test_empty_registry_aborts_with_single_summary_entry(self) -> None:
+        # Stub a registry loader that returns 0 schemes.
+        with patch.object(wl, "_validate_registry",
+                          return_value="registry is empty"):
+            summary = wl.run_snapshot(
+                config={"equity_categories": ["X"], "debt_categories": [],
+                        "include_gold": False, "top_n_to_persist": 5},
+                registry_path="ignored",
+                snapshot_date="2026-05-06",
+            )
+        self.assertIn("__registry__", summary)
+        self.assertIn("registry is empty", summary["__registry__"])
+        # No per-category errors should be produced.
+        self.assertEqual(len(summary), 1)
+
+    def test_undersized_registry_aborts(self) -> None:
+        with patch.object(wl, "_validate_registry",
+                          return_value="registry has only 42 entries"):
+            summary = wl.run_snapshot(
+                config={"equity_categories": ["X", "Y"], "debt_categories": ["Z"],
+                        "include_gold": True, "top_n_to_persist": 5},
+                registry_path="ignored",
+                snapshot_date="2026-05-06",
+            )
+        self.assertEqual(len(summary), 1)
+        self.assertIn("__registry__", summary)
+
+    def test_valid_registry_passes_through(self) -> None:
+        # With _validate_registry returning None, the runner should
+        # proceed to rank categories normally.
+        from backend.investment_analytics.ranking import (
+            CategoryRanking, FundMetrics, RankedFund,
+        )
+        with patch.object(wl, "_validate_registry", return_value=None), \
+             patch.object(wl, "rank_category") as rc:
+            # Build a tiny ranking object.
+            def fake_rank(category, _path):
+                funds = [
+                    FundMetrics(
+                        scheme_code=100 + i, fund_name=f"F{i}", fund_house="X",
+                        excess_return_pct=4.0 - i, max_drawdown_pct=-12.0,
+                        consistency_pct=70.0 - i * 5, volatility_pct=10.0,
+                        downside_capture_ratio=1.0, fund_cagr_pct=10.0,
+                        benchmark_cagr_pct=8.0, aligned_points=1500,
+                        history_years=8.0, drawdown_trough_date=None,
+                    ) for i in range(3)
+                ]
+                ranked = [
+                    RankedFund(rank=i + 1, fund=f, dominance_count=2 - i,
+                               total_peers=3, confidence_level="High",
+                               strengths=[], weaknesses=[])
+                    for i, f in enumerate(funds)
+                ]
+                return CategoryRanking(
+                    category=category, benchmark_name="X", benchmark_code=1,
+                    benchmark_fallback=False, ranked=ranked, excluded=[],
+                    computed_at="2026-05-06T00:00:00+00:00",
+                    total_funds_in_category=3,
+                )
+            rc.side_effect = fake_rank
+            summary = wl.run_snapshot(
+                config={"equity_categories": ["Equity Scheme - Large Cap Fund"],
+                        "debt_categories": [], "include_gold": False,
+                        "top_n_to_persist": 5},
+                registry_path="ignored", snapshot_date="2026-05-06",
+            )
+        self.assertEqual(summary["Equity Scheme - Large Cap Fund"], "ok")
+        self.assertNotIn("__registry__", summary)
 
 
 if __name__ == "__main__":  # pragma: no cover

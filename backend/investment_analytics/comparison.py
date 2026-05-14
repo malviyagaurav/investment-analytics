@@ -78,6 +78,17 @@ def alignment_quality(
             "history_years": 0.0,
         }
 
+    if not fund_series:
+        # Defensive — alignment_quality is only meaningful with >=1 series.
+        # Without this guard, max() on an empty generator raises
+        # ValueError and crashes the comparison endpoint.
+        return {
+            "aligned_points": len(common_dates),
+            "max_series_points": 0,
+            "relative_completeness": 0.0,
+            "calendar_density": 0.0,
+            "history_years": 0.0,
+        }
     max_points = max(len(pts) for pts in fund_series.values())
     expected_bdays = _business_days_between(common_dates[0], common_dates[-1])
     calendar_density = len(common_dates) / expected_bdays if expected_bdays else 0.0

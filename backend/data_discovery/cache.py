@@ -48,16 +48,25 @@ def get_cached_nav(scheme_code: int) -> Optional[dict]:
 
 
 def put_cached_nav(scheme_code: int, response: dict) -> None:
-    """Write MFAPI response to cache."""
+    """Write MFAPI response to cache atomically.
+
+    Uses temp-file + rename so a concurrent reader never observes a
+    half-written JSON file. Without this, Path.write_text truncates
+    then writes, and a reader during the window sees corrupted data
+    — graceful-failure code in get_cached_nav() turns that into a
+    cache miss, but it still produces redundant mfapi.in fetches
+    under concurrent load.
+    """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     entry = {
         "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "scheme_code": scheme_code,
         "response": response,
     }
-    _cache_path(scheme_code).write_text(
-        json.dumps(entry), encoding="utf-8",
-    )
+    target = _cache_path(scheme_code)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(entry), encoding="utf-8")
+    tmp.replace(target)
 
 
 def clear_cache() -> int:
