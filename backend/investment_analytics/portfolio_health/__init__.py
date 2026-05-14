@@ -684,6 +684,12 @@ class ConcentrationWarning:
     message: str
 
 
+# Shared leaf helpers — extracted to ._util so submodules can depend
+# on them without forming a cycle through __init__.py.
+from backend.investment_analytics.portfolio_health._util import (
+    _short_category,
+)
+
 # Coverage Integrity Layer — extracted to .coverage submodule.
 # Re-exported below for backward compatibility of imports.
 from backend.investment_analytics.portfolio_health.coverage import (
@@ -1757,14 +1763,6 @@ def _enrich_correlations(
     # pair at 0.86 is more decision-relevant than a tiny pair at 0.99.
     enriched.sort(key=lambda x: (-x["combined_weight_pct"], -x["correlation"]))
     return enriched
-
-
-def _short_category(cat: str) -> str:
-    """Shorten category name for display."""
-    return (cat
-            .replace("Equity Scheme - ", "")
-            .replace("Debt Scheme - ", "")
-            .replace(" Fund", ""))
 
 
 def _build_risk_summary(
