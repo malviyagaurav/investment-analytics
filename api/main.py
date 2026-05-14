@@ -18,6 +18,8 @@ except ImportError as exc:  # pragma: no cover
 
 from backend.investment_analytics.analyzers import analyze_portfolio, analyze_portfolio_with_funds
 from backend.investment_analytics.audit import append_audit_record, hash_payload, verify_audit_chain
+from backend.data_discovery import cache_tracker
+from backend.evidence.store import emit_evidence
 from backend.investment_analytics.errors import PolicyError
 from backend.investment_analytics.etf import analyze_etf
 from backend.investment_analytics.jurisdiction import JurisdictionContext, evaluate_jurisdiction
@@ -1194,33 +1196,40 @@ def analytics_rank_category(payload: CategoryRankRequest) -> dict:
             "message": "Analytics are disabled until supported jurisdiction context is present.",
         }
 
+    cache_tracker.start_tracking()
     try:
-        result = rank_category(
-            category=payload.category,
-            registry_path=str(REGISTRY_PATH),
-        )
-    except ValueError as exc:
-        raise PolicyError(
-            "ranking_error",
-            str(exc),
-            {"category": payload.category},
-        )
+        try:
+            result = rank_category(
+                category=payload.category,
+                registry_path=str(REGISTRY_PATH),
+            )
+        except ValueError as exc:
+            raise PolicyError(
+                "ranking_error",
+                str(exc),
+                {"category": payload.category},
+            )
 
-    append_audit_record(
-        AUDIT_PATH,
-        {
-            "event_type": "rank_category",
-            "subject_token": payload.subject_token,
-            "category": payload.category,
-            "ranked_count": len(result.ranked),
-            "excluded_count": len(result.excluded),
-            "benchmark_code": result.benchmark_code,
-            "benchmark_fallback": result.benchmark_fallback,
-            "schema_version": "v1",
-        },
-    )
+        ranking_payload = ranking_to_dict(result)
+        emit_evidence(
+            audit_log_path=AUDIT_PATH,
+            evidence_kind="ranking_snapshot",
+            audit_event={
+                "event_type": "rank_category",
+                "subject_token": payload.subject_token,
+                "category": payload.category,
+                "ranked_count": len(result.ranked),
+                "excluded_count": len(result.excluded),
+                "benchmark_code": result.benchmark_code,
+                "benchmark_fallback": result.benchmark_fallback,
+                "schema_version": "v1",
+            },
+            payload=ranking_payload,
+        )
+    finally:
+        cache_tracker.stop_tracking()
 
-    return {"gate": gate, "ranking": ranking_to_dict(result)}
+    return {"gate": gate, "ranking": ranking_payload}
 
 
 # ── Multi-Category Ranking ──────────────────────────────────────
@@ -1242,32 +1251,39 @@ def analytics_rank_all_categories(payload: MultiCategoryRankRequest) -> dict:
             "message": "Analytics are disabled until supported jurisdiction context is present.",
         }
 
+    cache_tracker.start_tracking()
     try:
-        result = rank_all_categories(
-            registry_path=str(REGISTRY_PATH),
-            top_n=payload.top_n,
-            categories=payload.categories if payload.categories else None,
-        )
-    except ValueError as exc:
-        raise PolicyError(
-            "multi_ranking_error",
-            str(exc),
-            {},
-        )
+        try:
+            result = rank_all_categories(
+                registry_path=str(REGISTRY_PATH),
+                top_n=payload.top_n,
+                categories=payload.categories if payload.categories else None,
+            )
+        except ValueError as exc:
+            raise PolicyError(
+                "multi_ranking_error",
+                str(exc),
+                {},
+            )
 
-    append_audit_record(
-        AUDIT_PATH,
-        {
-            "event_type": "rank_all_categories",
-            "subject_token": payload.subject_token,
-            "top_n": payload.top_n,
-            "categories_ranked": len(result.categories),
-            "categories_failed": len(result.errors),
-            "schema_version": "v1",
-        },
-    )
+        multi_ranking_payload = multi_ranking_to_dict(result)
+        emit_evidence(
+            audit_log_path=AUDIT_PATH,
+            evidence_kind="ranking_snapshot",
+            audit_event={
+                "event_type": "rank_all_categories",
+                "subject_token": payload.subject_token,
+                "top_n": payload.top_n,
+                "categories_ranked": len(result.categories),
+                "categories_failed": len(result.errors),
+                "schema_version": "v1",
+            },
+            payload=multi_ranking_payload,
+        )
+    finally:
+        cache_tracker.stop_tracking()
 
-    return {"gate": gate, "multi_ranking": multi_ranking_to_dict(result)}
+    return {"gate": gate, "multi_ranking": multi_ranking_payload}
 
 
 # ── Full Investment View (All Assets) ───────────────────────────
@@ -1289,28 +1305,35 @@ def analytics_rank_all_assets(payload: AllAssetsRankRequest) -> dict:
             "message": "Analytics are disabled until supported jurisdiction context is present.",
         }
 
+    cache_tracker.start_tracking()
     try:
-        result = rank_all_assets(
-            registry_path=str(REGISTRY_PATH),
-            top_n=payload.top_n,
+        try:
+            result = rank_all_assets(
+                registry_path=str(REGISTRY_PATH),
+                top_n=payload.top_n,
+            )
+        except ValueError as exc:
+            raise PolicyError("all_assets_error", str(exc), {})
+
+        all_assets_payload = all_assets_to_dict(result)
+        emit_evidence(
+            audit_log_path=AUDIT_PATH,
+            evidence_kind="ranking_snapshot",
+            audit_event={
+                "event_type": "rank_all_assets",
+                "subject_token": payload.subject_token,
+                "top_n": payload.top_n,
+                "equity_ranked": len(result.equity),
+                "debt_ranked": len(result.debt),
+                "gold_ranked": result.gold is not None,
+                "schema_version": "v1",
+            },
+            payload=all_assets_payload,
         )
-    except ValueError as exc:
-        raise PolicyError("all_assets_error", str(exc), {})
+    finally:
+        cache_tracker.stop_tracking()
 
-    append_audit_record(
-        AUDIT_PATH,
-        {
-            "event_type": "rank_all_assets",
-            "subject_token": payload.subject_token,
-            "top_n": payload.top_n,
-            "equity_ranked": len(result.equity),
-            "debt_ranked": len(result.debt),
-            "gold_ranked": result.gold is not None,
-            "schema_version": "v1",
-        },
-    )
-
-    return {"gate": gate, "all_assets": all_assets_to_dict(result)}
+    return {"gate": gate, "all_assets": all_assets_payload}
 
 
 @app.post("/analytics/portfolio-health")
@@ -1330,26 +1353,33 @@ def analytics_portfolio_health(payload: PortfolioHealthRequest) -> dict:
             "message": "Analytics are disabled until supported jurisdiction context is present.",
         }
 
+    cache_tracker.start_tracking()
     try:
-        result = check_portfolio_health(
-            scheme_codes=payload.scheme_codes,
-            weights=payload.weights,
-            registry_path=str(REGISTRY_PATH),
+        try:
+            result = check_portfolio_health(
+                scheme_codes=payload.scheme_codes,
+                weights=payload.weights,
+                registry_path=str(REGISTRY_PATH),
+            )
+        except ValueError as exc:
+            raise PolicyError("portfolio_health_error", str(exc), {})
+
+        health_payload = portfolio_health_to_dict(result, payload.weights)
+        emit_evidence(
+            audit_log_path=AUDIT_PATH,
+            evidence_kind="portfolio_health_snapshot",
+            audit_event={
+                "event_type": "portfolio_health_check",
+                "subject_token": payload.subject_token,
+                "holdings_count": len(payload.scheme_codes),
+                "schema_version": "v1",
+            },
+            payload=health_payload,
         )
-    except ValueError as exc:
-        raise PolicyError("portfolio_health_error", str(exc), {})
+    finally:
+        cache_tracker.stop_tracking()
 
-    append_audit_record(
-        AUDIT_PATH,
-        {
-            "event_type": "portfolio_health_check",
-            "subject_token": payload.subject_token,
-            "holdings_count": len(payload.scheme_codes),
-            "schema_version": "v1",
-        },
-    )
-
-    return {"gate": gate, "health": portfolio_health_to_dict(result, payload.weights)}
+    return {"gate": gate, "health": health_payload}
 
 
 frontend_dir = ROOT / "frontend"

@@ -34,7 +34,14 @@ def _is_fresh(entry: dict) -> bool:
 
 
 def get_cached_nav(scheme_code: int) -> Optional[dict]:
-    """Return cached MFAPI response if fresh, else None."""
+    """Return cached MFAPI response if fresh, else None.
+
+    On a successful cache hit, also reports the read to
+    ``cache_tracker.record_cache_read`` so the active tracking session
+    (if any) can include this entry in its ``cache_fingerprint``. The
+    report is a no-op when no session is active; cost is one stat()
+    + dict insert per hit.
+    """
     path = _cache_path(scheme_code)
     if not path.exists():
         return None
@@ -44,6 +51,10 @@ def get_cached_nav(scheme_code: int) -> Optional[dict]:
         return None
     if not _is_fresh(entry):
         return None
+    # Lazy import to avoid any chance of an import cycle if a future
+    # tracker module ever pulls anything back from data_discovery.
+    from backend.data_discovery.cache_tracker import record_cache_read
+    record_cache_read(path, scheme_code)
     return entry.get("response")
 
 

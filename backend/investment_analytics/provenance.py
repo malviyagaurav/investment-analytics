@@ -103,16 +103,23 @@ def capture_provenance_inputs(
       - ``analyzer_version`` — top-level analyzer identifier ("mf_v2" today).
       - ``registry_hash``    — sha256 of the registry file consumed, or null if no path supplied.
       - ``registry_path``    — absolute path string, or null if no path supplied.
-      - ``cache_fingerprint``— null at this layer; populated in step 4.
+      - ``cache_fingerprint``— sha256 over the NAV cache entries consumed by
+                               the current ``cache_tracker`` session, or null
+                               when no session is active.
 
     Callers that have a registry path pass it; callers that don't
     (most non-ranking events) get null for the registry fields.
+    The cache_fingerprint is auto-populated for callers running
+    inside a ``cache_tracker.start_tracking()`` block; otherwise null.
     """
+    # Lazy import: cache_tracker lives in data_discovery and resolving
+    # it at module load would tighten the import graph unnecessarily.
+    from backend.data_discovery.cache_tracker import cache_fingerprint
     return {
         "code_sha":          _git_head_sha(),
         "python_version":    ".".join(str(p) for p in sys.version_info[:3]),
         "analyzer_version":  "mf_v2",
         "registry_hash":     _hash_file(registry_path) if registry_path else None,
         "registry_path":     str(registry_path) if registry_path else None,
-        "cache_fingerprint": None,
+        "cache_fingerprint": cache_fingerprint(),
     }
