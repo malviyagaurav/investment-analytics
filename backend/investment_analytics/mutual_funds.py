@@ -81,8 +81,15 @@ def _period_return(start_value: float, end_value: float) -> float:
 
 def _annualized_return(start_value: float, end_value: float, years: float) -> float:
     period_return = _period_return(start_value, end_value)
-    if years <= 0 or (1.0 + period_return) <= 0:
+    if years <= 0:
         return 0.0
+    # Total loss (end_value == 0) gives period_return == -1.0. The
+    # mathematically correct annualized return is -1.0 (-100% per year
+    # in the abstract limit), not 0.0 — returning 0.0 mislabels a
+    # wipeout as "no return" in downstream displays. NAV cannot be
+    # negative in practice, so we still guard < -1.0 as malformed.
+    if period_return <= -1.0:
+        return -1.0 if (1.0 + period_return) == 0.0 else 0.0
     return ((1.0 + period_return) ** (1.0 / years)) - 1.0
 
 
