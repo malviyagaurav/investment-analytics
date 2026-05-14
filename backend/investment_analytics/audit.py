@@ -75,6 +75,32 @@ def _last_record_hash(path: Path) -> str:
     return str(record.get("current_hash") or record.get("record_hash") or "invalid")
 
 
+def _active_epoch(audit_dir: Path) -> int:
+    """Return the currently-open epoch number from epochs.json.
+
+    Reads OUTSIDE the audit-file flock — epoch changes are rare,
+    appends are frequent, and rotations themselves serialize against
+    appends via the audit-file lock. Cost: one small JSON read per
+    append; negligible against the existing fsync. NOT cached: a
+    concurrent rotation must be observable on the next append.
+
+    Returns 1 when epochs.json is absent (pre-migration behaviour),
+    unreadable, or contains no open epoch — keeping the
+    chain_epoch field meaningful even before formal migration.
+    """
+    epochs_path = audit_dir / "epochs.json"
+    if not epochs_path.exists():
+        return 1
+    try:
+        index = json.loads(epochs_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return 1
+    for epoch in reversed(index.get("epochs", [])):
+        if epoch.get("status") == "open":
+            return int(epoch["epoch"])
+    return 1
+
+
 def sanitize_audit_event(value: Any) -> Any:
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
@@ -93,6 +119,10 @@ def append_audit_record(path: Path, event: dict[str, Any]) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     sanitized_event = sanitize_audit_event(event)
     payload_hash = _sha256(_canonical_json(sanitized_event))
+    # Resolve the active epoch BEFORE the lock — epoch changes are
+    # rare and rotations serialize via the same lock we are about to
+    # take, so reading epochs.json here is safe.
+    epoch = _active_epoch(path.parent)
     # Critical section: thread-lock first (fast same-process path),
     # then fcntl.flock on the open handle for cross-process safety.
     # fsync is inside the flock — see module docstring.
@@ -105,6 +135,7 @@ def append_audit_record(path: Path, event: dict[str, Any]) -> dict[str, Any]:
                     "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                     "schema_version": "v1",
                     "analyzer_version": "mf_v2",
+                    "chain_epoch": epoch,
                     "prev_hash": previous_hash,
                     "payload_hash": payload_hash,
                     "event": sanitized_event,
@@ -124,6 +155,133 @@ def hash_payload(value: Any) -> str:
 
 def verify_audit_chain(path: Path) -> bool:
     return verify_audit_chain_diag(path)["valid"]
+
+
+def verify_audit_chain_multi(audit_dir: Path) -> dict[str, Any]:
+    """Aggregate verification across all epochs in epochs.json plus
+    documented orphan chains. Returns a TYPED overall_status so
+    monitoring systems can distinguish full health from partial
+    corruption without inferring it from buried warnings.
+
+    overall_status values:
+      - "valid"           — every registered epoch verified clean.
+      - "partial_failure" — at least one epoch valid AND at least one failed.
+      - "invalid"         — every registered epoch failed verification.
+      - "empty"           — no epochs.json and no live audit.jsonl on disk.
+      - "unverifiable"    — epochs.json present but malformed.
+
+    Pre-migration behaviour (no epochs.json): falls back to single-
+    file verification of audit_dir/audit.jsonl and reports a one-
+    element per_epoch array. Backward-compatible with the existing
+    /health surface that calls verify_audit_chain on a single file.
+
+    Orphan chains are documented but NOT re-verified — their
+    classification is recorded at migration time (when the chain
+    structure was inspected) and is treated as immutable. Echoing
+    the recorded classification here keeps the aggregate result
+    informative without rescanning every orphan on every health
+    poll.
+    """
+    epochs_path = audit_dir / "epochs.json"
+    if not epochs_path.exists():
+        live = audit_dir / "audit.jsonl"
+        if not live.exists():
+            return {
+                "overall_status": "empty",
+                "epochs_total": 0,
+                "epochs_valid": 0,
+                "epochs_failed": 0,
+                "orphan_chains_total": 0,
+                "per_epoch": [],
+                "per_orphan": [],
+            }
+        single = verify_audit_chain_diag(live)
+        status = "valid" if single["valid"] else "invalid"
+        return {
+            "overall_status": status,
+            "epochs_total": 1,
+            "epochs_valid": 1 if single["valid"] else 0,
+            "epochs_failed": 0 if single["valid"] else 1,
+            "orphan_chains_total": 0,
+            "per_epoch": [{
+                "epoch": 1,
+                "file": "audit.jsonl",
+                "status": status,
+                "lines_scanned": single["lines_scanned"],
+                "first_bad_line": single["first_bad_line"],
+                "reason": single["reason"],
+            }],
+            "per_orphan": [],
+        }
+
+    try:
+        index = json.loads(epochs_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {
+            "overall_status": "unverifiable",
+            "epochs_total": 0,
+            "epochs_valid": 0,
+            "epochs_failed": 0,
+            "orphan_chains_total": 0,
+            "per_epoch": [],
+            "per_orphan": [],
+            "reason": f"epochs.json could not be parsed: {exc}",
+        }
+
+    per_epoch = []
+    for epoch_entry in index.get("epochs", []):
+        epoch_file = audit_dir / epoch_entry["file"]
+        if not epoch_file.exists():
+            per_epoch.append({
+                "epoch": epoch_entry["epoch"],
+                "file": epoch_entry["file"],
+                "status": "missing",
+                "lines_scanned": 0,
+                "first_bad_line": None,
+                "reason": "file not found",
+            })
+            continue
+        diag = verify_audit_chain_diag(epoch_file)
+        per_epoch.append({
+            "epoch": epoch_entry["epoch"],
+            "file": epoch_entry["file"],
+            "status": "valid" if diag["valid"] else "invalid",
+            "lines_scanned": diag["lines_scanned"],
+            "first_bad_line": diag["first_bad_line"],
+            "reason": diag["reason"],
+        })
+
+    per_orphan = []
+    for orphan in index.get("orphan_chains", []):
+        per_orphan.append({
+            "file": orphan.get("file"),
+            "classification": orphan.get("classification", "unknown"),
+            "valid_through_line": orphan.get("valid_through_line"),
+            "total_lines": orphan.get("total_lines"),
+            "chain_root_type": orphan.get("chain_root_type"),
+        })
+
+    epochs_valid = sum(1 for e in per_epoch if e["status"] == "valid")
+    epochs_failed = sum(1 for e in per_epoch if e["status"] in ("invalid", "missing"))
+
+    if not per_epoch:
+        overall = "empty"
+    elif epochs_failed == 0:
+        overall = "valid"
+    elif epochs_valid == 0:
+        overall = "invalid"
+    else:
+        overall = "partial_failure"
+
+    return {
+        "overall_status": overall,
+        "epochs_total": len(per_epoch),
+        "epochs_valid": epochs_valid,
+        "epochs_failed": epochs_failed,
+        "orphan_chains_total": len(per_orphan),
+        "per_epoch": per_epoch,
+        "per_orphan": per_orphan,
+    }
 
 
 def verify_audit_chain_diag(path: Path) -> dict[str, Any]:
