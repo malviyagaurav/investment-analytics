@@ -51,6 +51,12 @@ The included CSV is synthetic sample data for local testing:
 data/sample/mutual_fund_nav.csv
 ```
 
+## Supported platforms
+
+- macOS — officially supported.
+- Linux — officially supported.
+- Windows — **not officially supported.** `run.bat` is retained for legacy use but is deprecated; file-system primitives (atomic writes, file locking, scheduler integration) are tested against POSIX semantics only. Windows may be added back if a real near-term requirement emerges.
+
 ## Run
 
 ```bash

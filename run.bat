@@ -1,4 +1,11 @@
 @echo off
+REM ============================================================
+REM DEPRECATED — Windows is not officially supported.
+REM This script is retained for legacy use but the project's
+REM file-system primitives (atomic writes, file locking) are
+REM tested against POSIX semantics only. Use macOS or Linux for
+REM supported operation. See README "Supported platforms".
+REM ============================================================
 cd /d %~dp0
 
 if not exist venv (
