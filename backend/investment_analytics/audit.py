@@ -7,7 +7,9 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
+from backend.investment_analytics.evidence_envelope import build_event_envelope
 
 # Two-layer locking on the read-prev-hash → write-record critical
 # section so concurrent appenders cannot interleave and corrupt the
@@ -115,9 +117,40 @@ def sanitize_audit_event(value: Any) -> Any:
     return value
 
 
-def append_audit_record(path: Path, event: dict[str, Any]) -> dict[str, Any]:
+def append_audit_record(
+    path: Path,
+    event: dict[str, Any],
+    evidence_kind: Optional[str] = None,
+    run_id: Optional[str] = None,
+    parent_run_id: Optional[str] = None,
+    inputs: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Append a hash-chained audit record.
+
+    Backward compatible: callers that pass only ``path`` + ``event``
+    continue to work; the envelope is auto-added with
+    ``evidence_kind=None`` (intentionally unclassified). New call
+    sites opt in to ``evidence_kind`` and lineage via the optional
+    kwargs.
+
+    The envelope is built BEFORE sanitization so PII in provenance
+    fields (e.g. an inputs dict containing user_id / email) is still
+    redacted. The hash covers the sanitized envelope, so what's on
+    disk and what's hashed agree byte-for-byte.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    sanitized_event = sanitize_audit_event(event)
+
+    # Envelope first, sanitize after — provenance fields may themselves
+    # contain sensitive data and must pass through the same redaction
+    # path as caller-supplied event fields.
+    enveloped_event = build_event_envelope(
+        event,
+        evidence_kind=evidence_kind,
+        run_id=run_id,
+        parent_run_id=parent_run_id,
+        inputs=inputs,
+    )
+    sanitized_event = sanitize_audit_event(enveloped_event)
     payload_hash = _sha256(_canonical_json(sanitized_event))
     # Resolve the active epoch BEFORE the lock — epoch changes are
     # rare and rotations serialize via the same lock we are about to
