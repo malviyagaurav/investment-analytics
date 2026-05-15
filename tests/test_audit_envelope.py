@@ -83,11 +83,14 @@ class TestEvidenceKindsEnum(unittest.TestCase):
 
 class TestMethodology(unittest.TestCase):
 
-    def test_eight_components_present(self) -> None:
+    def test_nine_components_present(self) -> None:
+        # Step 10 added "regime_classifier" — METHODOLOGY_SCHEMA_VERSION
+        # bumped from v1 to v2 to reflect the structural change.
         expected = {
             "equity_metric", "debt_metric", "gold_metric",
             "confidence", "coverage_integrity", "alternative_gate",
             "correlation_detection", "decision_engine",
+            "regime_classifier",
         }
         self.assertEqual(set(METHODOLOGY_VERSIONS.keys()), expected)
 

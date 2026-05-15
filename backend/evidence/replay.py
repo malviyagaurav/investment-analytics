@@ -260,6 +260,41 @@ def _identify_divergence_drivers(
     return drivers
 
 
+# Payload-level driver registry. Maps a top-level payload key to the
+# driver kind that should fire when the recorded vs current values
+# differ. Used by ``_classify`` AFTER envelope-level drivers are
+# checked. Payload-level fields are evidence-kind-specific
+# provenance that downstream tooling treats as ground truth, so
+# differences must surface as typed drivers rather than collapse to
+# generic "no driver".
+_PAYLOAD_LEVEL_DRIVERS: Dict[str, str] = {
+    "taxonomy_version":           "taxonomy_changed",
+    "regime_classifier_version":  "classifier_methodology_changed",
+}
+
+
+def _identify_payload_drivers(
+    recorded_payload: Any, current_payload: Any,
+) -> List[dict]:
+    """Surface payload-level provenance drifts (taxonomy / classifier
+    versions) as typed drivers. Only fires when BOTH sides carry the
+    field — asymmetric None is treated as "this evidence_kind doesn't
+    expose that surface" rather than as drift, matching the existing
+    convention from envelope-level drivers."""
+    if not (isinstance(recorded_payload, dict)
+            and isinstance(current_payload, dict)):
+        return []
+    out: List[dict] = []
+    for key, kind in _PAYLOAD_LEVEL_DRIVERS.items():
+        rec_val = recorded_payload.get(key)
+        cur_val = current_payload.get(key)
+        if rec_val is None or cur_val is None:
+            continue
+        if rec_val != cur_val:
+            out.append({"kind": kind, "from": rec_val, "to": cur_val})
+    return out
+
+
 def _classify(
     recorded_envelope: dict,
     current_payload: dict,
@@ -325,6 +360,14 @@ def _classify(
         current_inputs=capture_provenance_inputs(registry_path_for_provenance),
         current_methodology=current_methodology(),
     )
+    # Payload-level drivers — evidence-kind-specific provenance that
+    # lives in the heavy payload rather than the envelope. Step 10
+    # introduced ``taxonomy_version`` and ``regime_classifier_version``
+    # on regime_summary and drift_analysis payloads; these are two
+    # distinct drift surfaces (ontology vs methodology) and must be
+    # distinguishable on replay rather than collapsing into a generic
+    # "differs without driver" → invalid_replay outcome.
+    drivers.extend(_identify_payload_drivers(rec_sanitized, cur_sanitized))
     diff_keys = _top_level_diff_keys(rec_stripped, cur_stripped)
 
     if drivers:
@@ -591,6 +634,98 @@ def _replay_experiment_run(
     }
 
 
+def _replay_regime_summary(
+    audit_event: dict,
+    recorded_envelope: dict,
+    registry_path: Path,
+) -> dict:
+    """Replay a regime_summary row.
+
+    Re-invokes ``classify_window`` with the recorded window dates and
+    the recorded ``applied_bands`` from ``classification_basis``. The
+    cache directory is the runner's default (production cache); replay
+    surfaces classifier-methodology bumps (different default bands) as
+    expected_divergence via Step 7's _classify, not by failing here.
+
+    Side-effect free: no new regime_summary is emitted, no supersedes
+    chain is touched. Pure re-derivation.
+    """
+    from backend.regimes.classifier import (
+        DEFAULT_CACHE_DIR,
+        classification_to_payload,
+        classify_window,
+    )
+    from backend.regimes.config import ClassifierParams
+
+    recorded_payload = recorded_envelope.get("payload", {})
+    basis = recorded_payload.get("classification_basis", {}) or {}
+    applied_bands = basis.get("applied_bands", {}) or {}
+
+    params = ClassifierParams(
+        signal_scheme_code=basis.get("signal_scheme_code", 120716),
+        low_threshold_pct=applied_bands.get("low_threshold_pct", 12.0),
+        high_threshold_pct=applied_bands.get("high_threshold_pct", 20.0),
+        crisis_threshold_pct=applied_bands.get("crisis_threshold_pct", 35.0),
+        min_coverage_days=basis.get("min_coverage_days", 60),
+        boundary_confidence_margin_pct=basis.get(
+            "boundary_confidence_margin_pct", 10.0),
+    )
+
+    classification = classify_window(
+        recorded_payload["window_start_date"],
+        recorded_payload["window_end_date"],
+        params=params,
+        cache_dir=DEFAULT_CACHE_DIR,
+    )
+    payload = classification_to_payload(classification)
+    # Preserve supersedes_run_id from recorded — it's environmental
+    # lineage, not derivable from re-classification.
+    payload["supersedes_run_id"] = recorded_payload.get("supersedes_run_id")
+    return payload
+
+
+def _replay_drift_analysis(
+    audit_event: dict,
+    recorded_envelope: dict,
+    registry_path: Path,
+) -> dict:
+    """Replay a drift_analysis row.
+
+    Re-classifies both windows under current defaults, recomputes the
+    drift composition, returns the typed payload. Methodology drift
+    between record and replay surfaces via Step 7's standard
+    classification machinery.
+    """
+    from backend.regimes.classifier import (
+        DEFAULT_CACHE_DIR,
+        classify_window,
+    )
+    from backend.regimes.drift import compute_drift, drift_to_payload
+
+    recorded_payload = recorded_envelope.get("payload", {})
+    window_a = recorded_payload.get("window_a", {}) or {}
+    window_b = recorded_payload.get("window_b", {}) or {}
+
+    a = classify_window(
+        window_a["start_date"], window_a["end_date"],
+        cache_dir=DEFAULT_CACHE_DIR,
+    )
+    b = classify_window(
+        window_b["start_date"], window_b["end_date"],
+        cache_dir=DEFAULT_CACHE_DIR,
+    )
+    drift = compute_drift(
+        a, b,
+        drift_kind=recorded_payload.get("drift_kind", "rolling_vol_shift"),
+        signal_kind=recorded_payload.get("signal_kind", "nifty50_realized_vol"),
+    )
+    return drift_to_payload(
+        drift,
+        window_a_run_id=window_a.get("regime_summary_run_id"),
+        window_b_run_id=window_b.get("regime_summary_run_id"),
+    )
+
+
 ReplayHandler = Callable[[dict, dict, Path], dict]
 
 REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
@@ -598,6 +733,8 @@ REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
     "portfolio_health_snapshot": _replay_portfolio_health,
     "watchlist_run":             _replay_watchlist_run,
     "experiment_run":            _replay_experiment_run,
+    "regime_summary":            _replay_regime_summary,
+    "drift_analysis":            _replay_drift_analysis,
 }
 
 

@@ -51,7 +51,12 @@ distinguish "different versions of the same component" from
 from __future__ import annotations
 
 
-METHODOLOGY_SCHEMA_VERSION = "v1"
+# v2: added "regime_classifier" component (Step 10). Per the schema-
+# version bump rules above, adding a component bumps the schema
+# version. Existing audit rows are byte-untouched; new rows carry the
+# v2 dict and a new ENVELOPE_SCHEMA_FINGERPRINT, surfacing the
+# structural change as explicit drift on replay.
+METHODOLOGY_SCHEMA_VERSION = "v2"
 
 
 # Source of truth. Each component is independently versioned per the
@@ -66,6 +71,7 @@ METHODOLOGY_VERSIONS: dict[str, str] = {
     "alternative_gate":      "v1",
     "correlation_detection": "v1",
     "decision_engine":       "v1",
+    "regime_classifier":     "v1",
 }
 
 

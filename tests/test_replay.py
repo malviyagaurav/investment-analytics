@@ -334,12 +334,14 @@ class UnreproducibleTests(ReplayTestBase):
 
     def test_unsupported_evidence_kind_classified_as_unreproducible(self) -> None:
         # Synthesize a row with an evidence_kind that has no handler.
-        # Step 9 activated experiment_run; drift_analysis remains
-        # unhandled until Step 10.
+        # Step 9 activated experiment_run; Step 10 activated
+        # drift_analysis + regime_summary; replay_result remains
+        # intentionally handler-less (replaying a replay would compose
+        # into an infinite re-derivation chain).
         record = emit_evidence(
             audit_log_path=self.audit_path,
-            evidence_kind="drift_analysis",
-            audit_event={"event_type": "drift_analysis", "schema_version": "v1"},
+            evidence_kind="replay_result",
+            audit_event={"event_type": "replay_run", "schema_version": "v1"},
             payload={"opaque": True},
         )
         run_id = record["event"]["run_id"]
@@ -349,7 +351,7 @@ class UnreproducibleTests(ReplayTestBase):
             registry_path=self.registry_path,
         )
         self.assertEqual(result["state"], "unreproducible")
-        self.assertIn("drift_analysis", result["reason"])
+        self.assertIn("replay_result", result["reason"])
 
     def test_registry_missing_classified_as_unreproducible(self) -> None:
         record = self._emit_ranking_snapshot()
