@@ -17,7 +17,12 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install dependencies with: pip install -r requirements.txt") from exc
 
 from backend.investment_analytics.analyzers import analyze_portfolio, analyze_portfolio_with_funds
-from backend.investment_analytics.audit import append_audit_record, hash_payload, verify_audit_chain
+from backend.investment_analytics.audit import (
+    append_audit_record,
+    hash_payload,
+    verify_audit_chain,
+    verify_audit_chain_multi,
+)
 from backend.data_discovery import cache_tracker
 from backend.evidence.store import emit_evidence
 from backend.investment_analytics.errors import PolicyError
@@ -161,21 +166,86 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     )
 
 
+def _verify_audit_multi_safe(audit_dir: Path) -> dict:
+    """Run ``verify_audit_chain_multi`` and surface filesystem-level
+    errors as typed ``unverifiable`` results rather than letting them
+    propagate as 500s from the HTTP layer.
+
+    The chain primitive already catches its own JSON-decode errors and
+    epoch-file-missing cases. What it does NOT catch is permission
+    errors on the read itself (``open()`` raising PermissionError or
+    other OSErrors). Health endpoints must degrade into typed
+    diagnostics, not framework stack traces — so we wrap.
+
+    The CLI does NOT use this wrapper: an operator running
+    ``python -m backend.audit verify`` against an unreadable directory
+    SHOULD see the underlying traceback so they know exactly what to
+    fix.
+    """
+    try:
+        return verify_audit_chain_multi(audit_dir)
+    except (PermissionError, OSError) as exc:
+        return {
+            "overall_status": "unverifiable",
+            "epochs_total": 0,
+            "epochs_valid": 0,
+            "epochs_failed": 0,
+            "orphan_chains_total": 0,
+            "per_epoch": [],
+            "per_orphan": [],
+            "reason": f"permission_error: {exc}",
+        }
+
+
 @app.get("/health")
 def health() -> dict:
-    audit_ok = verify_audit_chain(AUDIT_PATH)
+    audit_dir = AUDIT_PATH.parent
+    start = time.monotonic()
+    audit_result = _verify_audit_multi_safe(audit_dir)
+    duration_ms = int((time.monotonic() - start) * 1000)
+
+    overall = audit_result.get("overall_status", "unverifiable")
+    audit_ok = overall == "valid"
     data_dir_ok = (ROOT / "data" / "sample").is_dir()
-    if not data_dir_ok:
+
+    # Top-level status mapping (preserves "no fake green" rule):
+    #   data dir missing                           → unhealthy
+    #   overall_status invalid / unverifiable      → unhealthy
+    #   overall_status partial_failure             → degraded
+    #   overall_status empty                       → ok (structurally clean)
+    #   overall_status valid AND data dir present  → ok
+    if not data_dir_ok or overall in ("invalid", "unverifiable"):
         status = "unhealthy"
-    elif not audit_ok:
+    elif overall == "partial_failure":
         status = "degraded"
     else:
         status = "ok"
+
+    total_lines = sum(
+        (e.get("lines_scanned") or 0)
+        for e in audit_result.get("per_epoch", []) or []
+    )
+
+    audit_payload = {
+        "overall_status":            overall,
+        "epochs_total":              audit_result.get("epochs_total", 0),
+        "epochs_valid":              audit_result.get("epochs_valid", 0),
+        "epochs_failed":             audit_result.get("epochs_failed", 0),
+        "orphan_chains_total":       audit_result.get("orphan_chains_total", 0),
+        "total_lines":               total_lines,
+        "per_epoch":                 audit_result.get("per_epoch", []) or [],
+        "per_orphan":                audit_result.get("per_orphan", []) or [],
+        "verification_duration_ms":  duration_ms,
+    }
+    if "reason" in audit_result:
+        audit_payload["reason"] = audit_result["reason"]
+
     return {
         "status": status,
         "audit_chain_valid": audit_ok,
         "data_directory_accessible": data_dir_ok,
         "registered_sources": len(MF_SOURCE_REGISTRY),
+        "audit": audit_payload,
     }
 
 
