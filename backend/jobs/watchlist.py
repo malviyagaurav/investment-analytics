@@ -19,6 +19,7 @@ What it does NOT do:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +49,20 @@ DEFAULT_CONFIG_PATH = ROOT / "data" / "watchlist" / "categories.json"
 SNAPSHOTS_DIR = ROOT / "data" / "snapshots"
 REGISTRY_PATH = ROOT / "data" / "registry" / "schemes.json"
 AUDIT_PATH = ROOT / "data" / "audit" / "audit.jsonl"
+SIDECAR_PATH = ROOT / "data" / "watchlist" / "last_run.json"
+HOLIDAY_CALENDAR_PATH = ROOT / "data" / "reference" / "india_market_holidays.json"
+
+# Closed set; widening requires re-thinking the detection ladder, not
+# just adding a string.
+NO_CHANGE_REASONS = frozenset({"weekend", "holiday", "no_nav_change"})
+SIDECAR_SCHEMA_VERSION = "v1"
+NO_CHANGE_SCHEMA_VERSION = "v1"
+
+# Fields stripped before content-hashing a per-category trimmed
+# snapshot. ``computed_at`` is wall-clock; ``snapshot_date`` is the
+# run's logical date. Both change every run; neither reflects whether
+# the underlying ranking changed.
+_VOLATILE_SNAPSHOT_FIELDS = ("computed_at", "snapshot_date")
 
 
 # ── Config ───────────────────────────────────────────────────────────
@@ -183,10 +198,14 @@ def _emit_watchlist_audit(
     reg: str,
     summary: Dict[str, str],
     registry_problem: Optional[str],
-) -> None:
+) -> Dict[str, Any]:
     """Emit one watchlist_run audit + evidence event per run_snapshot
     invocation. Fired on success AND on registry-abort so the cron
-    job is never silently invisible to the audit chain."""
+    job is never silently invisible to the audit chain.
+
+    Returns the audit record (whose ``event.run_id`` the caller uses
+    when updating the sidecar pointer to the last real run).
+    """
     equity_cats = list(cfg.get("equity_categories", []))
     debt_cats = list(cfg.get("debt_categories", []))
     gold_included = bool(cfg.get("include_gold", False))
@@ -226,7 +245,7 @@ def _emit_watchlist_audit(
         "snapshots_dir": str(SNAPSHOTS_DIR),
     }
 
-    emit_evidence(
+    return emit_evidence(
         audit_log_path=AUDIT_PATH,
         evidence_kind="watchlist_run",
         audit_event=audit_event,
@@ -234,10 +253,167 @@ def _emit_watchlist_audit(
     )
 
 
+# ── no_change detection ──────────────────────────────────────────────
+
+
+def _load_holiday_calendar(
+    path: Optional[Path] = None,
+) -> Optional[frozenset[str]]:
+    """Load the India market holiday calendar if present.
+
+    Shape on disk: ``{"holidays": ["YYYY-MM-DD", ...]}``. Returns
+    ``None`` (not an empty set) when the file is absent so callers
+    distinguish "no calendar shipped" from "calendar present but
+    today not listed". A malformed file logs WARN and returns None;
+    we never claim holiday status from a file we cannot read.
+    """
+    p = path or HOLIDAY_CALENDAR_PATH
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        days = data.get("holidays", [])
+        if not isinstance(days, list):
+            raise ValueError("holidays must be a list")
+        return frozenset(str(d) for d in days)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.warning("Holiday calendar at %s unreadable: %s", p, exc)
+        return None
+
+
+def _is_weekend(snap_date: str) -> bool:
+    return datetime.fromisoformat(snap_date).weekday() >= 5
+
+
+def _is_holiday(snap_date: str, calendar: Optional[frozenset[str]]) -> bool:
+    return calendar is not None and snap_date in calendar
+
+
+def _strip_volatile(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in payload.items() if k not in _VOLATILE_SNAPSHOT_FIELDS}
+
+
+def _content_hash(category_payloads: Dict[str, Dict[str, Any]]) -> str:
+    """SHA-256 over canonical-JSON of ``{category -> stripped_payload}``.
+
+    Independent of run wall-clock and run date. Two runs producing
+    the same per-category ranking content hash to the same value
+    regardless of when they ran.
+    """
+    stripped = {cat: _strip_volatile(p) for cat, p in category_payloads.items()}
+    canonical = json.dumps(
+        stripped, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _load_sidecar(path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Load the last-run sidecar pointer. Returns None when missing
+    or unreadable. Corrupt files log WARN but are NOT deleted — left
+    for forensic inspection.
+
+    Does NOT validate that the referenced snapshot files still exist;
+    that check happens in the post-compute path (it only matters for
+    ``no_nav_change``, not for weekend / holiday short-circuits).
+    """
+    p = path or SIDECAR_PATH
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Sidecar at %s unreadable: %s", p, exc)
+        return None
+    if not isinstance(data, dict) or "run_id" not in data:
+        logger.warning("Sidecar at %s missing run_id field", p)
+        return None
+    return data
+
+
+def _write_sidecar(payload: Dict[str, Any], path: Optional[Path] = None) -> Path:
+    """Atomic write: tmp + fsync + rename. Matches the discipline
+    used by ``save_snapshot`` and ``evidence.store.write_evidence``."""
+    target = path or SIDECAR_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    data_bytes = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    with tmp.open("wb") as handle:
+        handle.write(data_bytes)
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp.replace(target)
+    return target
+
+
+def _all_refs_exist(refs: Dict[str, str]) -> bool:
+    """Sidecar references are repo-relative paths under data/. Check
+    each one resolves to an existing file. One missing ref disables
+    the post-compute short-circuit (we'd rather regenerate than emit
+    a no_change pointing at vanished evidence)."""
+    data_dir = ROOT / "data"
+    for rel in refs.values():
+        # rel is stored as a project-root-relative path string
+        # (e.g. "data/snapshots/.../2026-05-14.json"). Resolve and
+        # check; an absolute path is also accepted.
+        p = Path(rel)
+        if not p.is_absolute():
+            p = ROOT / rel if rel.startswith("data/") else data_dir / rel
+        if not p.exists():
+            return False
+    return True
+
+
+def _emit_no_change_event(
+    snap_date: str,
+    reason: str,
+    sidecar: Dict[str, Any],
+    registry_hash_now: Optional[str],
+) -> Dict[str, Any]:
+    """Audit-only append for a no_change run.
+
+    Reuses ``evidence_kind="watchlist_run"`` (no new enum value).
+    Sets ``parent_run_id`` on the envelope to the sidecar's run_id
+    so replay can chain back to the last content-bearing run.
+    Does NOT write an evidence file.
+    """
+    from backend.investment_analytics.audit import append_audit_record
+    from backend.investment_analytics.provenance import capture_provenance_inputs
+
+    if reason not in NO_CHANGE_REASONS:
+        raise ValueError(
+            f"no_change reason must be one of {sorted(NO_CHANGE_REASONS)}, "
+            f"got {reason!r}"
+        )
+
+    previous_run_id = sidecar["run_id"]
+
+    audit_event = {
+        "event_type": "no_change",
+        "snapshot_date": snap_date,
+        "reason": reason,
+        "previous_run_id": previous_run_id,
+        "previous_snapshot_date": sidecar.get("snapshot_date"),
+        "previous_content_hash": sidecar.get("content_hash"),
+        "registry_hash": registry_hash_now,
+        "cache_fingerprint": cache_tracker.cache_fingerprint(),
+        "category_snapshot_refs": sidecar.get("category_snapshot_refs", {}),
+        "schema_version": NO_CHANGE_SCHEMA_VERSION,
+    }
+
+    return append_audit_record(
+        AUDIT_PATH,
+        audit_event,
+        evidence_kind="watchlist_run",
+        parent_run_id=previous_run_id,
+        inputs=capture_provenance_inputs(),
+    )
+
+
 def run_snapshot(
     config: Optional[Dict[str, Any]] = None,
     registry_path: Optional[str] = None,
     snapshot_date: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Re-rank every category in the watchlist; persist top-N per
     category to data/snapshots/<safe_category>/<YYYY-MM-DD>.json.
@@ -247,13 +423,25 @@ def run_snapshot(
     "registry_error" summary entry instead of producing dozens of
     per-category errors that obscure the real problem.
 
-    Emits exactly one ``watchlist_run`` audit event per invocation
-    (success OR registry-abort), with the full per-category summary
-    persisted by-reference under ``data/evidence/watchlist_run/``.
+    Emits exactly one audit event per invocation:
+      - ``watchlist_run`` on the real path (success or registry-abort),
+        with the full per-category summary persisted by-reference.
+      - ``no_change`` (audit-only, no evidence file) when a short-circuit
+        layer fires: weekend, holiday (calendar required), or
+        post-compute output content equals the sidecar's previous run.
+
+    Short-circuits are disabled when:
+      - ``force=True``
+      - no sidecar exists (no baseline to compare against)
+      - the sidecar is corrupt / unreadable
+      - registry validation fails (those paths emit watchlist_run with
+        ``registry_problem``; they are never reclassified as no_change)
+
     Cache reads during the run are aggregated into a single
     ``cache_fingerprint`` recorded on the audit row's provenance.
 
-    Returns a summary {category -> "ok" | error_message}.
+    Returns a summary {category -> "ok" | error_message}, or
+    ``{"__no_change__": "<reason>"}`` for short-circuit runs.
     """
     cfg = config if config is not None else load_config()
     reg = registry_path or str(REGISTRY_PATH)
@@ -265,62 +453,141 @@ def run_snapshot(
 
     cache_tracker.start_tracking()
     try:
+        # ── Pre-compute short-circuits (require sidecar baseline) ──
+        sidecar = None if force else _load_sidecar()
+        if sidecar is not None:
+            registry_hash_now = _hash_registry_for_provenance(reg)
+            if _is_weekend(snap_date):
+                _emit_no_change_event(snap_date, "weekend", sidecar, registry_hash_now)
+                return {"__no_change__": "weekend"}
+            if _is_holiday(snap_date, _load_holiday_calendar()):
+                _emit_no_change_event(snap_date, "holiday", sidecar, registry_hash_now)
+                return {"__no_change__": "holiday"}
+
         registry_problem = _validate_registry(reg)
         if registry_problem is not None:
             logger.error("Watchlist run aborted: %s", registry_problem)
             summary["__registry__"] = f"error: {registry_problem}"
-        else:
-            for cat in cfg.get("equity_categories", []):
-                if cat in EXCLUDED_CATEGORIES:
-                    summary[cat] = "excluded by ranking policy"
-                    continue
-                try:
-                    result = rank_category(cat, reg)
-                    payload = ranking_to_dict(result)
-                    payload["snapshot_date"] = snap_date
-                    payload["snapshot_kind"] = "equity"
-                    save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
-                    summary[cat] = "ok"
-                except Exception as exc:
-                    logger.warning("equity rank failed for %s: %s", cat, exc)
-                    summary[cat] = f"error: {exc}"
+            _emit_watchlist_audit(
+                snap_date=snap_date,
+                cfg=cfg,
+                reg=reg,
+                summary=summary,
+                registry_problem=registry_problem,
+            )
+            # Do NOT update sidecar on registry-abort: it has no
+            # content baseline; using it for future comparisons
+            # would let an empty result masquerade as "no change."
+            return summary
 
-            for cat in cfg.get("debt_categories", []):
-                try:
-                    result = rank_debt_category(cat, reg)
-                    payload = debt_ranking_to_dict(result)
-                    payload["snapshot_date"] = snap_date
-                    payload["snapshot_kind"] = "debt"
-                    save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
-                    summary[cat] = "ok"
-                except Exception as exc:
-                    logger.warning("debt rank failed for %s: %s", cat, exc)
-                    summary[cat] = f"error: {exc}"
+        # ── Compute everything first; defer disk writes until after
+        # the post-compute short-circuit decision. ─────────────────
+        category_payloads: Dict[str, Dict[str, Any]] = {}
+        for cat in cfg.get("equity_categories", []):
+            if cat in EXCLUDED_CATEGORIES:
+                summary[cat] = "excluded by ranking policy"
+                continue
+            try:
+                result = rank_category(cat, reg)
+                payload = ranking_to_dict(result)
+                payload["snapshot_date"] = snap_date
+                payload["snapshot_kind"] = "equity"
+                category_payloads[cat] = _trim_for_snapshot(payload, top_n)
+                summary[cat] = "ok"
+            except Exception as exc:
+                logger.warning("equity rank failed for %s: %s", cat, exc)
+                summary[cat] = f"error: {exc}"
 
-            if cfg.get("include_gold", False):
-                cat = "Gold Fund (FoF)"
-                try:
-                    result = rank_gold_funds(reg)
-                    payload = gold_ranking_to_dict(result)
-                    payload["snapshot_date"] = snap_date
-                    payload["snapshot_kind"] = "gold"
-                    save_snapshot(cat, snap_date, _trim_for_snapshot(payload, top_n))
-                    summary[cat] = "ok"
-                except Exception as exc:
-                    logger.warning("gold rank failed: %s", exc)
-                    summary[cat] = f"error: {exc}"
+        for cat in cfg.get("debt_categories", []):
+            try:
+                result = rank_debt_category(cat, reg)
+                payload = debt_ranking_to_dict(result)
+                payload["snapshot_date"] = snap_date
+                payload["snapshot_kind"] = "debt"
+                category_payloads[cat] = _trim_for_snapshot(payload, top_n)
+                summary[cat] = "ok"
+            except Exception as exc:
+                logger.warning("debt rank failed for %s: %s", cat, exc)
+                summary[cat] = f"error: {exc}"
 
-        _emit_watchlist_audit(
+        if cfg.get("include_gold", False):
+            cat = "Gold Fund (FoF)"
+            try:
+                result = rank_gold_funds(reg)
+                payload = gold_ranking_to_dict(result)
+                payload["snapshot_date"] = snap_date
+                payload["snapshot_kind"] = "gold"
+                category_payloads[cat] = _trim_for_snapshot(payload, top_n)
+                summary[cat] = "ok"
+            except Exception as exc:
+                logger.warning("gold rank failed: %s", exc)
+                summary[cat] = f"error: {exc}"
+
+        # ── Post-compute short-circuit: identical content vs sidecar ──
+        content_hash_now = _content_hash(category_payloads)
+        if (
+            not force
+            and sidecar is not None
+            and category_payloads
+            and sidecar.get("content_hash") == content_hash_now
+            and _all_refs_exist(sidecar.get("category_snapshot_refs", {}))
+        ):
+            registry_hash_now = _hash_registry_for_provenance(reg)
+            _emit_no_change_event(
+                snap_date, "no_nav_change", sidecar, registry_hash_now,
+            )
+            return {"__no_change__": "no_nav_change"}
+
+        # ── Real run: persist per-category snapshots, emit audit,
+        # update sidecar to the new run as the canonical baseline. ──
+        category_refs: Dict[str, str] = {}
+        for cat, payload in category_payloads.items():
+            target = save_snapshot(cat, snap_date, payload)
+            # Prefer repo-relative ("data/snapshots/...") for portability.
+            # Fall back to absolute when the snapshots dir lives outside
+            # the repo root (test fixtures monkeypatch this).
+            try:
+                category_refs[cat] = str(target.relative_to(ROOT))
+            except ValueError:
+                category_refs[cat] = str(target)
+
+        record = _emit_watchlist_audit(
             snap_date=snap_date,
             cfg=cfg,
             reg=reg,
             summary=summary,
             registry_problem=registry_problem,
         )
+
+        if category_payloads:
+            # Sidecar tracks ONLY content-bearing watchlist_run rows.
+            # no_change rows never update it; the lineage anchor stays
+            # the last real run.
+            _write_sidecar({
+                "schema_version": SIDECAR_SCHEMA_VERSION,
+                "run_id": record["event"]["run_id"],
+                "snapshot_date": snap_date,
+                "generated_at": record["event"]["generated_at"],
+                "registry_hash": record["event"]["inputs"].get("registry_hash"),
+                "cache_fingerprint": record["event"]["inputs"].get("cache_fingerprint"),
+                "content_hash": content_hash_now,
+                "category_snapshot_refs": category_refs,
+            })
     finally:
         cache_tracker.stop_tracking()
 
     return summary
+
+
+def _hash_registry_for_provenance(registry_path: str) -> Optional[str]:
+    """Local helper: sha256 of the registry file if it exists.
+
+    Used only for the no_change event's ``registry_hash`` field
+    (forensic). Returns None if the path doesn't resolve or is
+    unreadable — matching the contract of ``capture_provenance_inputs``.
+    """
+    from backend.investment_analytics.provenance import _hash_file
+    return _hash_file(Path(registry_path))
 
 
 # ── Diff ─────────────────────────────────────────────────────────────
@@ -415,6 +682,15 @@ def _main(argv: Optional[List[str]] = None) -> int:
 
     run_p = sub.add_parser("run", help="Take a fresh snapshot of every watched category.")
     run_p.add_argument("--date", help="Override snapshot date (YYYY-MM-DD).")
+    run_p.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Bypass the no_change short-circuit. Forces a full ranking + "
+            "snapshot write even when today is a weekend, a holiday, or "
+            "the content matches the sidecar's previous run."
+        ),
+    )
 
     latest_p = sub.add_parser("latest", help="Print latest snapshot for a category.")
     latest_p.add_argument("category", help="AMFI category name (quote it).")
@@ -428,7 +704,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "run":
-        summary = run_snapshot(snapshot_date=args.date)
+        summary = run_snapshot(snapshot_date=args.date, force=args.force)
         ok = sum(1 for v in summary.values() if v == "ok")
         print(json.dumps({"ok_count": ok, "total": len(summary), "summary": summary}, indent=2))
         return 0

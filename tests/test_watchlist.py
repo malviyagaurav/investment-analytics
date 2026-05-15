@@ -159,12 +159,18 @@ class RunSnapshotTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self._orig_dir = wl.SNAPSHOTS_DIR
         self._orig_audit = wl.AUDIT_PATH
+        self._orig_sidecar = wl.SIDECAR_PATH
+        self._orig_holiday = wl.HOLIDAY_CALENDAR_PATH
         wl.SNAPSHOTS_DIR = Path(self.tmp.name) / "snapshots"
         wl.AUDIT_PATH = Path(self.tmp.name) / "audit" / "audit.jsonl"
+        wl.SIDECAR_PATH = Path(self.tmp.name) / "watchlist" / "last_run.json"
+        wl.HOLIDAY_CALENDAR_PATH = Path(self.tmp.name) / "reference" / "holidays.json"
 
     def tearDown(self) -> None:
         wl.SNAPSHOTS_DIR = self._orig_dir
         wl.AUDIT_PATH = self._orig_audit
+        wl.SIDECAR_PATH = self._orig_sidecar
+        wl.HOLIDAY_CALENDAR_PATH = self._orig_holiday
         self.tmp.cleanup()
 
     def test_run_snapshot_writes_one_file_per_equity_category(self) -> None:
@@ -235,12 +241,18 @@ class RegistryValidationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self._orig_dir = wl.SNAPSHOTS_DIR
         self._orig_audit = wl.AUDIT_PATH
+        self._orig_sidecar = wl.SIDECAR_PATH
+        self._orig_holiday = wl.HOLIDAY_CALENDAR_PATH
         wl.SNAPSHOTS_DIR = Path(self.tmp.name) / "snapshots"
         wl.AUDIT_PATH = Path(self.tmp.name) / "audit" / "audit.jsonl"
+        wl.SIDECAR_PATH = Path(self.tmp.name) / "watchlist" / "last_run.json"
+        wl.HOLIDAY_CALENDAR_PATH = Path(self.tmp.name) / "reference" / "holidays.json"
 
     def tearDown(self) -> None:
         wl.SNAPSHOTS_DIR = self._orig_dir
         wl.AUDIT_PATH = self._orig_audit
+        wl.SIDECAR_PATH = self._orig_sidecar
+        wl.HOLIDAY_CALENDAR_PATH = self._orig_holiday
         self.tmp.cleanup()
 
     def test_empty_registry_aborts_with_single_summary_entry(self) -> None:
@@ -323,14 +335,20 @@ class WatchlistAuditEmissionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self._orig_snap = wl.SNAPSHOTS_DIR
         self._orig_audit = wl.AUDIT_PATH
+        self._orig_sidecar = wl.SIDECAR_PATH
+        self._orig_holiday = wl.HOLIDAY_CALENDAR_PATH
         wl.SNAPSHOTS_DIR = Path(self.tmp.name) / "snapshots"
         wl.AUDIT_PATH = Path(self.tmp.name) / "audit" / "audit.jsonl"
+        wl.SIDECAR_PATH = Path(self.tmp.name) / "watchlist" / "last_run.json"
+        wl.HOLIDAY_CALENDAR_PATH = Path(self.tmp.name) / "reference" / "holidays.json"
         self.data_dir = Path(self.tmp.name)
         self.evidence_dir = self.data_dir / "evidence" / "watchlist_run"
 
     def tearDown(self) -> None:
         wl.SNAPSHOTS_DIR = self._orig_snap
         wl.AUDIT_PATH = self._orig_audit
+        wl.SIDECAR_PATH = self._orig_sidecar
+        wl.HOLIDAY_CALENDAR_PATH = self._orig_holiday
         self.tmp.cleanup()
 
     def _read_audit_records(self) -> list:
@@ -564,6 +582,374 @@ class WatchlistAuditEmissionTests(unittest.TestCase):
             wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date="2026-05-15")
         # Tracker stopped via finally even on success path.
         self.assertFalse(cache_tracker.is_active())
+
+
+class NoChangeDetectionTests(unittest.TestCase):
+    """Step 6: short-circuit weekend / holiday / unchanged-NAV runs.
+
+    Detection ladder (each layer can short-circuit independently):
+      1. weekend         → audit-only, no compute
+      2. holiday         → audit-only, no compute (calendar file required)
+      3. no_nav_change   → compute runs, but content_hash matches sidecar
+                           → no snapshot writes, no evidence file
+
+    Short-circuits NEVER run without a sidecar baseline. Registry-abort
+    is never reclassified as no_change. ``--force`` bypasses all layers.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig_snap = wl.SNAPSHOTS_DIR
+        self._orig_audit = wl.AUDIT_PATH
+        self._orig_sidecar = wl.SIDECAR_PATH
+        self._orig_holiday = wl.HOLIDAY_CALENDAR_PATH
+        self.data_dir = Path(self.tmp.name)
+        wl.SNAPSHOTS_DIR = self.data_dir / "snapshots"
+        wl.AUDIT_PATH = self.data_dir / "audit" / "audit.jsonl"
+        wl.SIDECAR_PATH = self.data_dir / "watchlist" / "last_run.json"
+        wl.HOLIDAY_CALENDAR_PATH = self.data_dir / "reference" / "india_market_holidays.json"
+
+    def tearDown(self) -> None:
+        wl.SNAPSHOTS_DIR = self._orig_snap
+        wl.AUDIT_PATH = self._orig_audit
+        wl.SIDECAR_PATH = self._orig_sidecar
+        wl.HOLIDAY_CALENDAR_PATH = self._orig_holiday
+        self.tmp.cleanup()
+
+    # ── fixtures ──
+
+    def _cfg(self, equity=("Equity Scheme - Large Cap Fund",), debt=(),
+             include_gold=False, top_n=5) -> dict:
+        return {
+            "equity_categories": list(equity),
+            "debt_categories": list(debt),
+            "include_gold": include_gold,
+            "top_n_to_persist": top_n,
+        }
+
+    def _run_real(self, cfg, snap_date="2026-05-14", codes=(101, 102, 103)) -> None:
+        """Helper: do a real (non-short-circuit) watchlist_run via the
+        public entry point so the sidecar is written by production code,
+        not the test. ``2026-05-14`` is a Thursday (weekday)."""
+
+        def rank(category, _path):
+            return _ranking(category, list(codes))
+
+        with patch.object(wl, "rank_category", side_effect=rank), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored", snapshot_date=snap_date)
+
+    def _audit_events(self) -> list:
+        if not wl.AUDIT_PATH.exists():
+            return []
+        with wl.AUDIT_PATH.open("r", encoding="utf-8") as h:
+            return [json.loads(line)["event"] for line in h if line.strip()]
+
+    def _write_holiday_calendar(self, days) -> None:
+        wl.HOLIDAY_CALENDAR_PATH.parent.mkdir(parents=True, exist_ok=True)
+        wl.HOLIDAY_CALENDAR_PATH.write_text(
+            json.dumps({"holidays": list(days)}), encoding="utf-8",
+        )
+
+    # ── tests ──
+
+    def test_no_sidecar_means_no_short_circuit_even_on_weekend(self) -> None:
+        # 2026-05-16 is a Saturday — the weekend layer would fire IF a
+        # baseline existed. Without a sidecar we MUST fall through to
+        # a normal watchlist_run, not invent a no_change with no anchor.
+        self.assertFalse(wl.SIDECAR_PATH.exists())
+        cfg = self._cfg()
+        with patch.object(wl, "rank_category",
+                          side_effect=lambda c, p: _ranking(c, [101, 102, 103])), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-16")
+        self.assertEqual(summary["Equity Scheme - Large Cap Fund"], "ok")
+        events = self._audit_events()
+        self.assertEqual([e["event_type"] for e in events], ["watchlist_run"])
+        # Sidecar written by the real run.
+        self.assertTrue(wl.SIDECAR_PATH.exists())
+
+    def test_weekend_short_circuits_to_no_change(self) -> None:
+        # Seed a real run on Thursday 2026-05-14 to populate sidecar.
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        sidecar_after_real = json.loads(wl.SIDECAR_PATH.read_text())
+
+        # Saturday 2026-05-16 — weekend layer fires.
+        with patch.object(wl, "rank_category") as rc, \
+             patch.object(wl, "_validate_registry", return_value=None):
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-16")
+            rc.assert_not_called()  # no compute happened
+
+        self.assertEqual(summary, {"__no_change__": "weekend"})
+        events = self._audit_events()
+        types = [e["event_type"] for e in events]
+        self.assertEqual(types, ["watchlist_run", "no_change"])
+        nc = events[-1]
+        self.assertEqual(nc["reason"], "weekend")
+        self.assertEqual(nc["previous_run_id"], sidecar_after_real["run_id"])
+        self.assertEqual(nc["parent_run_id"], sidecar_after_real["run_id"])
+        self.assertEqual(nc["snapshot_date"], "2026-05-16")
+        # Sidecar must NOT have moved to the no_change row.
+        sidecar_after_nc = json.loads(wl.SIDECAR_PATH.read_text())
+        self.assertEqual(sidecar_after_nc["run_id"], sidecar_after_real["run_id"])
+
+    def test_holiday_short_circuits_when_calendar_present(self) -> None:
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        baseline = json.loads(wl.SIDECAR_PATH.read_text())
+
+        # 2026-05-15 is a Friday (weekday). Mark as holiday.
+        self._write_holiday_calendar(["2026-05-15"])
+
+        with patch.object(wl, "rank_category") as rc, \
+             patch.object(wl, "_validate_registry", return_value=None):
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-15")
+            rc.assert_not_called()
+
+        self.assertEqual(summary, {"__no_change__": "holiday"})
+        nc = self._audit_events()[-1]
+        self.assertEqual(nc["event_type"], "no_change")
+        self.assertEqual(nc["reason"], "holiday")
+        self.assertEqual(nc["parent_run_id"], baseline["run_id"])
+
+    def test_holiday_calendar_absent_falls_through_to_content_check(self) -> None:
+        # No calendar file. A weekday that COULD be a holiday is treated
+        # as a normal trading day — we never claim holiday status without
+        # evidence. Content matches → no_nav_change, not "holiday".
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        self.assertFalse(wl.HOLIDAY_CALENDAR_PATH.exists())
+
+        # Same content, different date.
+        def rank(category, _path):
+            return _ranking(category, [101, 102, 103])
+
+        with patch.object(wl, "rank_category", side_effect=rank), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-15")
+
+        self.assertEqual(summary, {"__no_change__": "no_nav_change"})
+        nc = self._audit_events()[-1]
+        self.assertEqual(nc["reason"], "no_nav_change")
+
+    def test_post_compute_content_match_short_circuits(self) -> None:
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        baseline = json.loads(wl.SIDECAR_PATH.read_text())
+        original_snapshot = wl.load_snapshot(
+            "Equity Scheme - Large Cap Fund", "2026-05-14",
+        )
+
+        # Same ranking content next day. Use a different computed_at
+        # to prove the volatile-field strip works — the content hash
+        # must IGNORE computed_at and snapshot_date.
+        def rank(category, _path):
+            r = _ranking(category, [101, 102, 103])
+            r.computed_at = "2026-05-15T00:00:00+00:00"  # different wall clock
+            return r
+
+        with patch.object(wl, "rank_category", side_effect=rank), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-15")
+
+        self.assertEqual(summary, {"__no_change__": "no_nav_change"})
+        # Old snapshot file is untouched; no new snapshot was written.
+        self.assertIsNone(
+            wl.load_snapshot("Equity Scheme - Large Cap Fund", "2026-05-15"),
+        )
+        unchanged = wl.load_snapshot("Equity Scheme - Large Cap Fund", "2026-05-14")
+        self.assertEqual(unchanged, original_snapshot)
+        # No new evidence file under data/evidence/watchlist_run/.
+        ev_dir = self.data_dir / "evidence" / "watchlist_run"
+        before = len(list(ev_dir.iterdir())) if ev_dir.exists() else 0
+        self.assertEqual(before, 1)  # only the original real run's file
+        # Sidecar still anchored to the original real run.
+        sc = json.loads(wl.SIDECAR_PATH.read_text())
+        self.assertEqual(sc["run_id"], baseline["run_id"])
+
+    def test_content_change_writes_new_snapshot_and_updates_sidecar(self) -> None:
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        baseline = json.loads(wl.SIDECAR_PATH.read_text())
+
+        # Different codes → different content hash → real run.
+        def rank(category, _path):
+            return _ranking(category, [201, 202, 203])
+
+        with patch.object(wl, "rank_category", side_effect=rank), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-15")
+
+        self.assertEqual(summary["Equity Scheme - Large Cap Fund"], "ok")
+        self.assertIsNotNone(
+            wl.load_snapshot("Equity Scheme - Large Cap Fund", "2026-05-15"),
+        )
+        events = self._audit_events()
+        self.assertEqual([e["event_type"] for e in events],
+                         ["watchlist_run", "watchlist_run"])
+        # Sidecar moved to the new run.
+        sc_new = json.loads(wl.SIDECAR_PATH.read_text())
+        self.assertNotEqual(sc_new["run_id"], baseline["run_id"])
+        self.assertEqual(sc_new["snapshot_date"], "2026-05-15")
+
+    def test_force_bypasses_all_short_circuit_layers(self) -> None:
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        # Even with weekend AND matching content AND holiday calendar
+        # listing today, --force must still produce a real watchlist_run.
+        self._write_holiday_calendar(["2026-05-16"])
+
+        def rank(category, _path):
+            return _ranking(category, [101, 102, 103])  # same content
+
+        with patch.object(wl, "rank_category", side_effect=rank), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            summary = wl.run_snapshot(
+                config=cfg, registry_path="ignored",
+                snapshot_date="2026-05-16",  # Saturday + holiday
+                force=True,
+            )
+
+        self.assertEqual(summary["Equity Scheme - Large Cap Fund"], "ok")
+        events = self._audit_events()
+        self.assertEqual([e["event_type"] for e in events],
+                         ["watchlist_run", "watchlist_run"])
+
+    def test_corrupt_sidecar_falls_through_to_real_run(self) -> None:
+        # No prior real run; instead, plant a corrupt sidecar so the
+        # short-circuit path is forced to a definite "skip" decision.
+        wl.SIDECAR_PATH.parent.mkdir(parents=True, exist_ok=True)
+        wl.SIDECAR_PATH.write_text("{ not valid json", encoding="utf-8")
+
+        cfg = self._cfg()
+        with patch.object(wl, "rank_category",
+                          side_effect=lambda c, p: _ranking(c, [1, 2, 3])), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            # Saturday — weekend layer WOULD fire if sidecar were valid.
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-16")
+
+        # Fell through to real run (corrupt sidecar treated as missing).
+        self.assertEqual(summary["Equity Scheme - Large Cap Fund"], "ok")
+        events = self._audit_events()
+        self.assertEqual([e["event_type"] for e in events], ["watchlist_run"])
+        # The successful real run rewrites the sidecar atomically with
+        # a valid baseline — corrupt content is replaced, not preserved.
+        # (Preservation of corrupt files is the responsibility of the
+        # load path's WARN log, not of the write path.)
+        sc = json.loads(wl.SIDECAR_PATH.read_text())
+        self.assertIn("run_id", sc)
+
+    def test_broken_snapshot_ref_disables_content_short_circuit(self) -> None:
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        # Delete the snapshot file the sidecar points at. With a missing
+        # reference, the post-compute layer must NOT claim no_change —
+        # we'd rather regenerate than emit a row pointing at vanished evidence.
+        ref_path = (wl.SNAPSHOTS_DIR / "Equity_Scheme__Large_Cap_Fund"
+                    / "2026-05-14.json")
+        ref_path.unlink()
+        self.assertFalse(ref_path.exists())
+
+        def rank(category, _path):
+            return _ranking(category, [101, 102, 103])  # same content
+
+        with patch.object(wl, "rank_category", side_effect=rank), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-15")
+
+        # Fell through to real run despite content match.
+        self.assertEqual(summary["Equity Scheme - Large Cap Fund"], "ok")
+        events = self._audit_events()
+        self.assertEqual([e["event_type"] for e in events],
+                         ["watchlist_run", "watchlist_run"])
+
+    def test_registry_abort_never_reclassified_as_no_change(self) -> None:
+        # Seed sidecar with a real run.
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        baseline = json.loads(wl.SIDECAR_PATH.read_text())
+
+        with patch.object(wl, "_validate_registry",
+                          return_value="registry has only 42 entries"):
+            summary = wl.run_snapshot(config=cfg, registry_path="ignored",
+                                      snapshot_date="2026-05-15")
+
+        self.assertIn("__registry__", summary)
+        events = self._audit_events()
+        self.assertEqual([e["event_type"] for e in events],
+                         ["watchlist_run", "watchlist_run"])
+        self.assertIsNotNone(events[-1].get("registry_problem"))
+        # Sidecar NOT updated by registry-abort path.
+        sc_after = json.loads(wl.SIDECAR_PATH.read_text())
+        self.assertEqual(sc_after["run_id"], baseline["run_id"])
+
+    def test_no_change_event_has_watchlist_run_evidence_kind_and_no_evidence_ref(self) -> None:
+        # Closed-enum check: we reuse watchlist_run rather than adding
+        # a new evidence_kind. no_change rows must NOT carry an
+        # evidence_ref (audit-only by design).
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+
+        with patch.object(wl, "rank_category") as rc, \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored",
+                            snapshot_date="2026-05-16")  # Saturday
+            rc.assert_not_called()
+
+        nc = self._audit_events()[-1]
+        self.assertEqual(nc["event_type"], "no_change")
+        self.assertEqual(nc["evidence_kind"], "watchlist_run")
+        self.assertNotIn("evidence_ref", nc)
+
+    def test_audit_chain_remains_valid_across_mixed_sequence(self) -> None:
+        from backend.investment_analytics.audit import verify_audit_chain
+        cfg = self._cfg()
+        # real → weekend no_change → content-match no_change → real
+        self._run_real(cfg, snap_date="2026-05-14")  # real (Thursday)
+
+        # Saturday — weekend layer.
+        with patch.object(wl, "rank_category") as rc, \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored",
+                            snapshot_date="2026-05-16")
+            rc.assert_not_called()
+
+        # Monday — same content (no_nav_change).
+        with patch.object(wl, "rank_category",
+                          side_effect=lambda c, p: _ranking(c, [101, 102, 103])), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored",
+                            snapshot_date="2026-05-18")
+
+        # Tuesday — different content (real run).
+        with patch.object(wl, "rank_category",
+                          side_effect=lambda c, p: _ranking(c, [201, 202, 203])), \
+             patch.object(wl, "_validate_registry", return_value=None):
+            wl.run_snapshot(config=cfg, registry_path="ignored",
+                            snapshot_date="2026-05-19")
+
+        types = [e["event_type"] for e in self._audit_events()]
+        self.assertEqual(types,
+                         ["watchlist_run", "no_change", "no_change", "watchlist_run"])
+        self.assertTrue(verify_audit_chain(wl.AUDIT_PATH))
+
+    def test_unknown_holiday_reason_rejected_at_emit(self) -> None:
+        # Defense in depth — _emit_no_change_event should refuse to
+        # write a reason not in the closed enum.
+        cfg = self._cfg()
+        self._run_real(cfg, snap_date="2026-05-14")
+        sc = json.loads(wl.SIDECAR_PATH.read_text())
+        with self.assertRaises(ValueError):
+            wl._emit_no_change_event("2026-05-15", "bogus_reason", sc, None)
 
 
 if __name__ == "__main__":  # pragma: no cover
