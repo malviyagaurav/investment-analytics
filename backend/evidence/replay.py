@@ -502,12 +502,102 @@ def _replay_watchlist_run(
     }
 
 
+def _replay_experiment_run(
+    audit_event: dict,
+    recorded_envelope: dict,
+    registry_path: Path,
+) -> dict:
+    """Replay an experiment_run.
+
+    Reconstructs the recorded ExperimentConfig, verifies the registry
+    contract hasn't drifted (target / allowed_param_keys / callable
+    signature), and re-invokes the parameterized callable with the
+    recorded inputs + overrides against the current registry. Step 7's
+    ``_classify`` handles equality classification on the returned
+    payload.
+
+    Raises ``RuntimeError`` with a contract-diff message when the
+    registry contract has changed between record and replay — this
+    bubbles to ``invalid_replay`` per the surrounding handler-raise
+    contract. Diff components surface WHICH dimension drifted (target /
+    allowed_param_keys / callable_signature), giving operators the
+    forensic signal the simple fingerprint alone would not.
+    """
+    from backend.experiments.config import ExperimentConfig
+    from backend.experiments.registry import (
+        REGISTERED_PARAMETERIZED_FUNCS,
+        registry_contract,
+    )
+
+    recorded_payload = recorded_envelope.get("payload", {})
+    recorded_config_dict = recorded_payload.get("config", {})
+    recorded_contract = recorded_payload.get("registry_contract", {})
+    target = recorded_config_dict.get("target")
+
+    if target not in REGISTERED_PARAMETERIZED_FUNCS:
+        raise RuntimeError(
+            f"replay refused: target {target!r} is no longer registered. "
+            f"current registry: {sorted(REGISTERED_PARAMETERIZED_FUNCS)}"
+        )
+
+    current_contract = registry_contract(target)
+    drift_diffs = []
+    for key in ("target", "allowed_param_keys", "callable_signature"):
+        rec_val = recorded_contract.get(key)
+        cur_val = current_contract.get(key)
+        if rec_val != cur_val:
+            drift_diffs.append(f"{key}: recorded={rec_val!r} current={cur_val!r}")
+    if drift_diffs:
+        raise RuntimeError(
+            "replay refused: registry_contract drift detected — "
+            + "; ".join(drift_diffs)
+        )
+
+    # Reconstruct the config and re-run. The ExperimentConfig validator
+    # protects us against malformed recorded payloads (impossible if
+    # they were emitted by this codebase, but cheap insurance).
+    config = ExperimentConfig(
+        target=target,
+        target_inputs=recorded_config_dict.get("target_inputs", {}),
+        param_overrides=recorded_config_dict.get("param_overrides", {}),
+        methodology_kind=recorded_config_dict.get("methodology_kind"),
+        experiment_status=recorded_config_dict.get("experiment_status"),
+        derived_from_run_ids=tuple(
+            recorded_config_dict.get("derived_from_run_ids", [])
+        ),
+        non_semantic_metadata=recorded_config_dict.get("non_semantic_metadata", {}),
+    )
+
+    entry = REGISTERED_PARAMETERIZED_FUNCS[target]
+    call_kwargs = dict(config.target_inputs)
+    call_kwargs.setdefault("registry_path", str(registry_path))
+    call_kwargs.update(config.param_overrides)
+    result = entry.callable(**call_kwargs)
+    output_payload = entry.serializer(result)
+
+    # Return the same payload shape the runner emits so _classify can
+    # compare recorded vs current at the same level of detail.
+    return {
+        "config":                          config.to_payload(),
+        "output":                          output_payload,
+        "production_methodology_versions": recorded_payload.get(
+            "production_methodology_versions", {}),
+        "experiment_overrides":            dict(config.param_overrides),
+        "derivation_depth":                recorded_payload.get("derivation_depth", 0),
+        "registry_contract":               current_contract,
+        "baseline_run_id":                 recorded_payload.get("baseline_run_id"),
+        "schema_version":                  recorded_payload.get(
+            "schema_version", "v1"),
+    }
+
+
 ReplayHandler = Callable[[dict, dict, Path], dict]
 
 REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
     "ranking_snapshot":          _replay_ranking,
     "portfolio_health_snapshot": _replay_portfolio_health,
     "watchlist_run":             _replay_watchlist_run,
+    "experiment_run":            _replay_experiment_run,
 }
 
 
