@@ -129,7 +129,7 @@ def find_record_by_run_id(audit_path: Path, run_id: str) -> Optional[dict]:
     """
     if not audit_path.exists():
         return None
-    with audit_path.open("r", encoding="utf-8") as handle:
+    with audit_path.open("r", encoding="utf-8", newline="\n") as handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -838,7 +838,7 @@ def _detect_regime_dependency_superseded(
         return []
     # Build superseded-by index in one chain pass.
     superseded_by: Dict[str, str] = {}
-    with audit_path.open("r", encoding="utf-8") as handle:
+    with audit_path.open("r", encoding="utf-8", newline="\n") as handle:
         for line in handle:
             if not line.strip():
                 continue

@@ -3,7 +3,9 @@
 Deterministic orchestration of the evidence-producing CLIs from a
 single launchd/cron entry. The scheduler:
 
-  - acquires a non-blocking fcntl lock at ``data/scheduler/.lock``
+  - acquires a non-blocking cross-process lock at
+    ``data/scheduler/.lock`` (fcntl on POSIX, msvcrt on Windows, via
+    ``backend.investment_analytics._locking``)
   - performs a pre-flight audit chain integrity check
   - invokes each sub-job in DAG order as a FRESH Python subprocess
   - aggregates per-sub-job outcomes (ok / refused / failed /

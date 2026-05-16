@@ -448,7 +448,7 @@ def find_reliability_scores(
     if only_recommendations and only_refusals:
         return []
     rows: List[dict] = []
-    with audit_path.open("r", encoding="utf-8") as h:
+    with audit_path.open("r", encoding="utf-8", newline="\n") as h:
         for line in h:
             if not line.strip():
                 continue

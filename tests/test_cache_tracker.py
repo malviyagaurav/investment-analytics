@@ -154,8 +154,12 @@ class TestCacheTrackerBasics(unittest.TestCase):
         # If a cache file vanished between read and stat, the tracker
         # MUST skip it silently rather than inject a sentinel that
         # would change the fingerprint depending on transient FS state.
+        # Use tempfile.gettempdir() rather than a hardcoded "/tmp" so
+        # the test runs on Windows (which uses %TEMP%).
+        import tempfile
+        missing = Path(tempfile.gettempdir()) / "this-does-not-exist-99999.json"
         cache_tracker.start_tracking()
-        cache_tracker.record_cache_read(Path("/tmp/this-does-not-exist-99999.json"), 99999)
+        cache_tracker.record_cache_read(missing, 99999)
         fp = cache_tracker.cache_fingerprint()
         # Should match empty-session fingerprint (no entries recorded).
         self.assertEqual(fp, hashlib.sha256(b"[]").hexdigest())

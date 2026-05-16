@@ -118,7 +118,7 @@ def _find_prior_approval_for_target(
         return None
     import json
     latest: Optional[Dict[str, Any]] = None
-    with audit_path.open("r", encoding="utf-8") as h:
+    with audit_path.open("r", encoding="utf-8", newline="\n") as h:
         for line in h:
             if not line.strip():
                 continue
@@ -411,7 +411,7 @@ def find_governance_decisions(
         return []
     import json
     out: List[Dict[str, Any]] = []
-    with audit_path.open("r", encoding="utf-8") as h:
+    with audit_path.open("r", encoding="utf-8", newline="\n") as h:
         for line in h:
             if not line.strip():
                 continue

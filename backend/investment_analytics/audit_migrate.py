@@ -30,7 +30,10 @@ CLI usage:
 from __future__ import annotations
 
 import argparse
-import fcntl
+from backend.investment_analytics._locking import (
+    acquire_exclusive_blocking,
+    release as release_exclusive,
+)
 import json
 import sys
 from datetime import datetime, timezone
@@ -89,7 +92,7 @@ def _read_first_record(path: Path) -> Optional[Dict[str, Any]]:
     missing / empty / unparseable."""
     if not path.exists():
         return None
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open("r", encoding="utf-8", newline="\n") as handle:
         for line in handle:
             if line.strip():
                 try:
@@ -105,7 +108,7 @@ def _read_last_record(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     last: Optional[str] = None
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open("r", encoding="utf-8", newline="\n") as handle:
         for line in handle:
             if line.strip():
                 last = line
@@ -121,7 +124,7 @@ def _count_lines(path: Path) -> int:
     if not path.exists():
         return 0
     count = 0
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open("r", encoding="utf-8", newline="\n") as handle:
         for line in handle:
             if line.strip():
                 count += 1
@@ -295,13 +298,15 @@ def migrate_audit_to_epochs(
                 "Manual inspection required before re-migrating."
             ) from exc
 
-    # Lock the live audit file (using its own fcntl lock to match
-    # the append path). If the file doesn't exist yet, create empty.
+    # Lock the live audit file (using the same cross-platform lock
+    # adapter the append path uses, so migration and live appends
+    # cannot interleave on either POSIX or Windows). If the file
+    # doesn't exist yet, create empty.
     audit_dir.mkdir(parents=True, exist_ok=True)
     live.touch(exist_ok=True)
 
-    with live.open("a", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    with live.open("a", encoding="utf-8", newline="\n") as handle:
+        acquire_exclusive_blocking(handle.fileno())
         try:
             # End-to-end verification of the live chain. Refuse to
             # formalize a broken chain into epochs.json.
@@ -370,7 +375,7 @@ def migrate_audit_to_epochs(
             return index
 
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            release_exclusive(handle.fileno())
 
 
 def _main(argv: Optional[list[str]] = None) -> int:

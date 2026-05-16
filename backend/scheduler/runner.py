@@ -9,12 +9,14 @@ event recording the cadence-tick provenance.
      honest across the cadence — a ``git pull`` between sub-jobs
      is correctly reflected in subsequent evidence.
 
-  2. The scheduler holds a single ``fcntl.flock`` (non-blocking)
-     on ``data/scheduler/.lock`` for the duration of the tick.
-     Concurrent invocations refuse cleanly with a structured log
-     entry under ``data/scheduler/last_lock_conflict.json`` AND a
-     human-readable stderr line — visible in cron output without
-     polluting the audit chain.
+  2. The scheduler holds a single cross-process exclusive lock
+     (via ``backend.investment_analytics._locking``: fcntl.flock on
+     POSIX, msvcrt.locking on Windows) on ``data/scheduler/.lock``
+     for the duration of the tick. Concurrent invocations refuse
+     cleanly with a structured log entry under
+     ``data/scheduler/last_lock_conflict.json`` AND a human-readable
+     stderr line — visible in scheduler output without polluting
+     the audit chain.
 
   3. A pre-flight ``audit.verify`` is run before the DAG. The chain
      must be in a state ∈ {valid, partial_failure, empty} to start.
@@ -55,8 +57,6 @@ ticks into a typed chain.
 """
 from __future__ import annotations
 
-import errno
-import fcntl
 import json
 import os
 import subprocess
@@ -66,6 +66,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from backend.investment_analytics._locking import (
+    acquire_exclusive_nonblocking,
+    release as release_exclusive,
+)
 from backend.investment_analytics.audit import (
     append_audit_record,
     verify_audit_chain_multi,
@@ -141,6 +145,11 @@ def _record_lock_conflict(
     holding_pid_raw: Optional[str] = None
     try:
         if lock_path.exists():
+            # read_text on Path applies universal-newlines by
+            # default; on Windows that means CRLF→LF transparent
+            # normalization. Since the lock file only ever holds a
+            # numeric PID + trailing LF, the strip() below catches
+            # both forms uniformly.
             holding_pid_raw = lock_path.read_text(encoding="utf-8").strip() or None
     except OSError:
         holding_pid_raw = None
@@ -162,21 +171,39 @@ def _record_lock_conflict(
 
 
 def _acquire_scheduler_lock(lock_path: Path) -> Optional[int]:
-    """Non-blocking fcntl.flock acquisition. Returns the file
-    descriptor on success or None on contention. Kernel releases
-    the lock if the holding process dies, so a crashed scheduler
-    does NOT leave a stuck lock."""
+    """Non-blocking cross-process lock acquisition via the typed
+    locking adapter. Returns the file descriptor on success or
+    ``None`` on contention. Kernel releases the lock if the holding
+    process dies, so a crashed scheduler does NOT leave a stuck
+    lock — true on POSIX (fcntl) and on Windows (msvcrt).
+
+    Lock semantics: exclusive cross-process, non-blocking (try-
+    acquire), maps to fcntl.LOCK_EX | LOCK_NB on POSIX and
+    msvcrt.LK_NBLCK on Windows. Failure to acquire is reported as
+    ``None`` (the caller's typed ``refused_lock`` outcome), never as
+    a soft fallback that would let two schedulers run.
+
+    On Windows ``msvcrt.locking`` locks a byte range at the current
+    file position; the adapter seeks to byte 0 first, so all
+    processes contend on the same convention regardless of any
+    ``os.ftruncate`` / ``os.write`` the caller subsequently does.
+    The truncate-and-write-PID below operates AFTER the lock is
+    held, so it is safe."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o644)
+    # Wrap the adapter call so a propagating exception from
+    # ``acquire_exclusive_nonblocking`` (e.g., a non-EAGAIN OSError
+    # such as EBADF / EINTR / ENOLCK) does not leak the open fd.
+    # Pre-portability code closed the fd before re-raising; this
+    # block restores that exact cleanup discipline.
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (BlockingIOError, OSError) as exc:
-        # Non-blocking acquire returns EAGAIN/EWOULDBLOCK on contention.
-        if getattr(exc, "errno", None) in (errno.EAGAIN, errno.EWOULDBLOCK):
-            os.close(fd)
-            return None
+        acquired = acquire_exclusive_nonblocking(fd)
+    except BaseException:
         os.close(fd)
         raise
+    if not acquired:
+        os.close(fd)
+        return None
     # Truncate + write PID for forensic visibility (not used for locking).
     os.ftruncate(fd, 0)
     os.write(fd, f"{os.getpid()}\n".encode())
@@ -185,7 +212,7 @@ def _acquire_scheduler_lock(lock_path: Path) -> Optional[int]:
 
 def _release_scheduler_lock(fd: int) -> None:
     try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        release_exclusive(fd)
     finally:
         os.close(fd)
 

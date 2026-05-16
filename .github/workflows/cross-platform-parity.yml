@@ -1,0 +1,151 @@
+# Cross-platform parity enforcement.
+#
+# Converts one-time portability validation into a continuously-
+# enforced operational guarantee. On every push to main and every
+# pull request, the full test suite runs on real Ubuntu, macOS, and
+# Windows runners — proving in real hardware that the architecture's
+# replay, audit, and governance guarantees hold identically on each
+# platform.
+#
+# ## Fail-closed posture
+#
+#   - `fail-fast: false` so a failure on one platform does NOT
+#     cancel the others — operators see ALL platform outcomes.
+#   - NO `continue-on-error` anywhere.
+#   - NO `allowed-failure` annotations.
+#   - The three matrix jobs are intended to all be REQUIRED status
+#     checks on the `main` branch — any platform failure blocks
+#     merge. Configure via repository branch protection rules:
+#       Settings → Branches → main → Require status checks →
+#         "parity-matrix (ubuntu-latest)"
+#         "parity-matrix (macos-latest)"
+#         "parity-matrix (windows-latest)"
+#
+# ## What this workflow enforces
+#
+#   1. Import smoke — the package imports on every platform (catches
+#      any future `import fcntl` slipping back in).
+#   2. Cross-platform parity tests — proves locking-adapter branch
+#      selection matches host, canonical-JSON hash matches the
+#      pinned cross-platform reference, newlines normalize, cross-
+#      process locking works.
+#   3. Full pytest suite — every existing test passes on every
+#      platform. No platform-specific skips are tolerated unless
+#      they are typed (`@unittest.skipIf(...)`) with a documented
+#      reason; the maintainer should grep for skips before merging
+#      anything that adds them.
+#   4. Scheduler installer smoke — `install_scheduler.py --dry-run`
+#      renders the OS-appropriate artifact (plist / cron line /
+#      Task Scheduler XML) and exits 0.
+#
+# ## What this workflow does NOT do
+#
+#   - Does NOT install or activate the scheduler. Activation is an
+#     operator action with system-wide side effects and never
+#     happens automatically.
+#   - Does NOT mutate the audit chain. Test runs use temporary
+#     directories; the project's `data/` is untouched.
+#   - Does NOT introduce a new evidence_kind, methodology component,
+#     or replay driver. Below the explanatory surface, like the
+#     locking adapter itself.
+#
+# ## Why Python 3.9
+#
+# Matches the project's existing development environment (venv
+# Python 3.9.6). If the project later moves to a newer Python, bump
+# `python-version` here AND in the project's development setup
+# together.
+
+name: cross-platform-parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity-matrix:
+    name: parity-matrix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # fail-fast: false ensures ALL platforms run to completion
+      # even when one fails — operators see the full divergence
+      # surface in one CI cycle rather than discovering it one
+      # platform at a time.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        # pytest is not in requirements.txt (project uses unittest +
+        # pytest for ergonomics); install it here explicitly.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Import smoke test — package imports on host platform
+        # This catches the failure mode that historically blocked
+        # the project from running on Windows: `import fcntl` at
+        # module top of audit.py. If a future change re-introduces
+        # a platform-specific import outside the typed adapter,
+        # this step fails immediately.
+        run: python -c "import backend, sys; print('backend imports OK on', sys.platform)"
+
+      - name: Cross-platform parity tests (focused surface)
+        # The cross-platform test file is the explicit parity
+        # surface. Running it separately first means a parity
+        # failure surfaces with focused output before the broader
+        # suite buries it in unrelated test results.
+        run: python -m pytest tests/test_cross_platform.py -v
+
+      - name: Full test suite (fail closed on every platform)
+        # All ~1268 tests must pass on every platform. No platform
+        # gets `continue-on-error`; no platform gets `allowed
+        # failures`. Any failure blocks the PR.
+        run: python -m pytest tests/ -v
+
+      - name: Scheduler installer smoke test (renders host artifact)
+        # Proves the cross-platform installer picks the right
+        # deployment artifact for the host:
+        #   ubuntu  → prints crontab line
+        #   macos   → emits launchd plist contents
+        #   windows → renders Task Scheduler XML
+        # Exit code 0 on success.
+        run: python scripts/install_scheduler.py --dry-run
+
+      - name: Guard against new platform-specific skips
+        # The architecture's stance is that any skip must be typed
+        # and documented. This step grep's for new unittest skips
+        # in test_cross_platform.py specifically and fails if any
+        # appear there (parity tests must run uniformly on every
+        # platform, by definition). Skips in other test files are
+        # not flagged here — they may have legitimate, documented
+        # reasons (e.g., a test that exercises macOS-specific
+        # behavior); but a skip in the cross-platform parity tests
+        # would silently weaken the parity guarantee.
+        shell: bash
+        run: |
+          if grep -nE "@unittest\.(skip|skipIf|skipUnless)" tests/test_cross_platform.py; then
+            echo "::error::Found a skip annotation in tests/test_cross_platform.py."
+            echo "::error::Cross-platform parity tests must run uniformly on every platform."
+            echo "::error::If a typed skip is genuinely required, justify it in this workflow's"
+            echo "::error::review and update this guard step to allowlist the specific case."
+            exit 1
+          fi
+          echo "no platform-specific skips in cross-platform parity tests"

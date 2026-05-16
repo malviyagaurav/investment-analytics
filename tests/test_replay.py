@@ -551,7 +551,10 @@ class ReplayDisciplineTests(ReplayTestBase):
                 "config": cfg,
                 "summary": {"Equity Scheme - Large Cap Fund": "ok"},
                 "registry_path": str(self.registry_path),
-                "snapshots_dir": "/tmp/ignored",
+                # Mock value only — replay never honors the recorded
+                # path. Kept as a literal that obviously isn't a real
+                # filesystem location on any platform.
+                "snapshots_dir": "mock://ignored",
             },
         )
         original_run_id = original["event"]["run_id"]

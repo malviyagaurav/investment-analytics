@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -9,6 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from backend.investment_analytics._locking import (
+    acquire_exclusive_blocking,
+    release as release_exclusive,
+)
 from backend.investment_analytics.evidence_envelope import build_event_envelope
 
 # Two-layer locking on the read-prev-hash → write-record critical
@@ -17,23 +20,25 @@ from backend.investment_analytics.evidence_envelope import build_event_envelope
 #   1. _APPEND_LOCK (threading.Lock) — fast path for same-process
 #      contention (e.g. concurrent FastAPI handlers on a single
 #      uvicorn worker).
-#   2. fcntl.flock on the open audit file — cross-process
-#      serialization (FastAPI + cron-driven watchlist + ad-hoc CLI
-#      all appending to the same log).
+#   2. Cross-process exclusive lock via backend.investment_analytics
+#      ._locking — equivalent of fcntl.flock(LOCK_EX) on POSIX and
+#      msvcrt.locking on Windows. Single typed adapter so the audit
+#      append path works identically on Linux, macOS, and Windows.
 #
-# fsync runs INSIDE the flock so the record is durable before any
-# other writer is allowed to observe its hash. Releasing the lock
-# pre-fsync would create a visibility/durability split: process B
-# could read a hash whose backing record has not yet hit the disk.
+# fsync runs INSIDE the cross-process lock so the record is durable
+# before any other writer is allowed to observe its hash. Releasing
+# the lock pre-fsync would create a visibility/durability split:
+# process B could read a hash whose backing record has not yet hit
+# the disk.
 #
 # IMPORTANT — scope of the guarantee:
-#   fcntl.flock serializes ONLY between cooperating local processes
-#   on the same machine, on a local filesystem. It is NOT a
-#   distributed lock. It is NOT safe across NFS / SMB / network
-#   filesystems (the semantics there are unspecified or broken on
-#   most kernels). Single-machine single-user is the supported
-#   deployment per the architecture memo; do NOT generalize this
-#   guarantee to multi-host setups.
+#   The lock serializes ONLY between cooperating local processes on
+#   the same machine, on a local filesystem. It is NOT a distributed
+#   lock. It is NOT safe across NFS / SMB / network filesystems (the
+#   semantics there are unspecified or broken on most kernels).
+#   Single-machine single-user is the supported deployment per the
+#   architecture memo; do NOT generalize this guarantee to multi-host
+#   setups.
 _APPEND_LOCK = threading.Lock()
 
 PII_KEYS = {
@@ -64,7 +69,13 @@ def _last_record_hash(path: Path) -> str:
     if not path.exists():
         return "0" * 64
     last = ""
-    with path.open("r", encoding="utf-8") as handle:
+    # newline="\n" is explicit so the iterator yields lines split on
+    # LF only — same observable lines on macOS, Linux, and Windows
+    # regardless of how the file was written. Hash integrity is
+    # independent of newline form (hashes are over canonical JSON of
+    # the dict), but the explicit form removes one degree of
+    # platform-default freedom from the read path.
+    with path.open("r", encoding="utf-8", newline="\n") as handle:
         for line in handle:
             if line.strip():
                 last = line
@@ -157,11 +168,20 @@ def append_audit_record(
     # take, so reading epochs.json here is safe.
     epoch = _active_epoch(path.parent)
     # Critical section: thread-lock first (fast same-process path),
-    # then fcntl.flock on the open handle for cross-process safety.
-    # fsync is inside the flock — see module docstring.
+    # then cross-process exclusive lock on the open handle. fsync is
+    # inside the lock — see module docstring.
+    #
+    # The cross-process lock is acquired via the typed _locking
+    # adapter so the append path works identically on POSIX (fcntl)
+    # and Windows (msvcrt). newline="\n" is explicit so Windows
+    # text-mode auto-conversion to CRLF cannot affect on-disk bytes
+    # (hash integrity is independent of newline form because the
+    # hash is over canonical JSON of the dict, but the explicit form
+    # makes the byte sequence platform-stable for any external
+    # consumer that hashes file bytes).
     with _APPEND_LOCK:
-        with path.open("a", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            acquire_exclusive_blocking(handle.fileno())
             try:
                 previous_hash = _last_record_hash(path)
                 record = {
@@ -178,7 +198,7 @@ def append_audit_record(
                 handle.flush()
                 os.fsync(handle.fileno())
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                release_exclusive(handle.fileno())
     return record
 
 
@@ -334,7 +354,10 @@ def verify_audit_chain_diag(path: Path) -> dict[str, Any]:
     previous_hash = "0" * 64
     if not path.exists():
         return diag
-    with path.open("r", encoding="utf-8") as handle:
+    # newline="\n" is explicit so verify reads on Windows do not
+    # surface CRLF as part of a line that json.loads would otherwise
+    # tolerate but external byte-hashing tools would not.
+    with path.open("r", encoding="utf-8", newline="\n") as handle:
         for lineno, line in enumerate(handle, start=1):
             if not line.strip():
                 continue

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 
 DEFAULT_THRESHOLDS = {
@@ -29,12 +29,12 @@ def parse_date(value: str) -> date:
 
 
 def nav_staleness_flag(timestamp: str, as_of: date | None = None) -> bool:
-    as_of = as_of or datetime.utcnow().date()
+    as_of = as_of or datetime.now(timezone.utc).date()
     return trading_days_between(parse_date(timestamp), as_of) > DEFAULT_THRESHOLDS["nav_staleness_trading_days"]
 
 
 def holdings_staleness_flag(timestamp: str, as_of: date | None = None) -> bool:
-    as_of = as_of or datetime.utcnow().date()
+    as_of = as_of or datetime.now(timezone.utc).date()
     return (as_of - parse_date(timestamp)).days > DEFAULT_THRESHOLDS["holdings_staleness_days"]
 
 
