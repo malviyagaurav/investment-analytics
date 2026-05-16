@@ -98,11 +98,24 @@ class GovernanceTests(unittest.TestCase):
     def test_step_13_permits_only_proposed_emit_status(self) -> None:
         self.assertEqual(STEP_13_PERMITTED_EMIT_STATUSES, {"proposed"})
 
-    def test_methodology_schema_version_unchanged_at_v3(self) -> None:
-        # Step 13 does NOT bump METHODOLOGY_SCHEMA_VERSION — no new
-        # methodology component is introduced. This test pins that
-        # invariant so a future drift gets caught.
-        self.assertEqual(meth_mod.METHODOLOGY_SCHEMA_VERSION, "v3")
+    def test_step_13_added_no_methodology_component(self) -> None:
+        # Step 13 itself does NOT add a methodology component or bump
+        # METHODOLOGY_SCHEMA_VERSION — threshold_recommendation is a
+        # typed projection, not new inference. (Step 14 later added
+        # reliability_weighting and bumped schema to v4; that is its
+        # extension, not Step 13's.) This test pins the Step-13
+        # invariant by checking the relevant component names are
+        # absent from the methodology registry.
+        for unwanted in (
+            "threshold_recommender",
+            "recommendation_engine",
+            "research_artifact",
+        ):
+            self.assertNotIn(
+                unwanted, meth_mod.METHODOLOGY_VERSIONS,
+                f"Step 13 must not have added {unwanted!r} to "
+                f"METHODOLOGY_VERSIONS",
+            )
 
     def test_no_new_methodology_component_added(self) -> None:
         # Step 13 must NOT add a methodology component. Adding one

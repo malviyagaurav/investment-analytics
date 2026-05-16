@@ -1097,6 +1097,56 @@ def _replay_threshold_recommendation(
     }
 
 
+def _replay_reliability_score(
+    audit_event: dict,
+    recorded_envelope: dict,
+    registry_path: Path,
+) -> dict:
+    """Replay a reliability_score row.
+
+    Re-runs the scoring engine against the CURRENT chain with the
+    recorded ``scoring_window_days`` and ``target_run_id``. Step 7's
+    ``_classify`` then compares recorded vs current.
+
+    Reliability scores legitimately drift between record and replay
+    as new evidence accumulates (more recent rows shift the
+    histograms). The replay handler does NOT pin a frozen window —
+    it re-derives against the current chain. Drift surfaces via
+    existing drivers:
+      - ``methodology_changed`` if reliability_weighting bumped
+      - ``calibration_methodology_changed`` if engine bumped
+      - ``regime_dependency_superseded`` if consulted regime rows
+        were superseded after the original score
+
+    Side-effect-free — does NOT emit a new reliability_score row.
+    Step 7's existing replay_run is the only writer.
+    """
+    from backend.reliability.runner import (
+        DEFAULT_AUDIT_PATH as RELIABILITY_AUDIT_PATH,
+        score_target,
+    )
+
+    recorded_payload = recorded_envelope.get("payload", {})
+    target_canonical_id = recorded_payload.get("target_canonical_id")
+    target_run_id = recorded_payload.get("target_run_id")
+    window_days = recorded_payload.get("scoring_window_days", 90)
+    if not target_canonical_id or not target_run_id:
+        raise RuntimeError(
+            "replay refused: recorded reliability_score missing "
+            "target_canonical_id or target_run_id"
+        )
+    # Re-score with emit=False — we want the payload, not a new row.
+    result = score_target(
+        target_canonical_id=target_canonical_id,
+        target_run_id=target_run_id,
+        audit_path=RELIABILITY_AUDIT_PATH,
+        scoring_window_days=window_days,
+        supersedes_run_id=recorded_payload.get("supersedes_run_id"),
+        emit=False,
+    )
+    return result["payload"]
+
+
 ReplayHandler = Callable[[dict, dict, Path], dict]
 
 REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
@@ -1108,6 +1158,7 @@ REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
     "drift_analysis":            _replay_drift_analysis,
     "calibration_report":        _replay_calibration_report,
     "threshold_recommendation":  _replay_threshold_recommendation,
+    "reliability_score":         _replay_reliability_score,
 }
 
 

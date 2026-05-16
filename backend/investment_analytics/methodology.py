@@ -52,12 +52,13 @@ from __future__ import annotations
 
 
 # v2: added "regime_classifier" component (Step 10).
-# v3: added "calibration_engine" component (Step 11). Per the
+# v3: added "calibration_engine" component (Step 11).
+# v4: added "reliability_weighting" component (Step 14). Per the
 # schema-version bump rules above, adding a component bumps the
 # schema version. Existing audit rows are byte-untouched; new rows
-# carry the v3 dict and a new ENVELOPE_SCHEMA_FINGERPRINT, surfacing
+# carry the v4 dict and a new ENVELOPE_SCHEMA_FINGERPRINT, surfacing
 # the structural change as explicit drift on replay.
-METHODOLOGY_SCHEMA_VERSION = "v3"
+METHODOLOGY_SCHEMA_VERSION = "v4"
 
 
 # Source of truth. Each component is independently versioned per the
@@ -74,6 +75,7 @@ METHODOLOGY_VERSIONS: dict[str, str] = {
     "decision_engine":       "v1",
     "regime_classifier":     "v1",
     "calibration_engine":    "v1",
+    "reliability_weighting": "v1",
 }
 
 
