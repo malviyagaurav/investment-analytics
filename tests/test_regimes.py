@@ -203,8 +203,13 @@ class TaxonomyAndGovernanceTests(unittest.TestCase):
         self.assertIn("regime_classifier", meth_mod.METHODOLOGY_VERSIONS)
         self.assertEqual(meth_mod.METHODOLOGY_VERSIONS["regime_classifier"], "v1")
 
-    def test_methodology_schema_version_bumped_to_v2(self) -> None:
-        self.assertEqual(meth_mod.METHODOLOGY_SCHEMA_VERSION, "v2")
+    def test_methodology_schema_version_bumped(self) -> None:
+        # Step 10 bumped v1 → v2 (regime_classifier).
+        # Step 11 bumped v2 → v3 (calibration_engine).
+        # This test confirms the schema version reflects active
+        # components — the exact version moves forward as components
+        # are added, but the bump rule itself stays load-bearing.
+        self.assertEqual(meth_mod.METHODOLOGY_SCHEMA_VERSION, "v3")
 
 
 # ── Classifier semantics ─────────────────────────────────────────────

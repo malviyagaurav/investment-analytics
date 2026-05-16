@@ -267,9 +267,16 @@ def _identify_divergence_drivers(
 # provenance that downstream tooling treats as ground truth, so
 # differences must surface as typed drivers rather than collapse to
 # generic "no driver".
+#
+# Step 11 adds ``calibration_engine_version`` so a calibration
+# methodology bump (engine v1 → v2) is independently observable
+# from a taxonomy bump or a regime classifier bump. Each is a
+# distinct drift surface; collapsing them into a generic
+# "methodology_changed" would erase WHICH inference layer drifted.
 _PAYLOAD_LEVEL_DRIVERS: Dict[str, str] = {
-    "taxonomy_version":           "taxonomy_changed",
-    "regime_classifier_version":  "classifier_methodology_changed",
+    "taxonomy_version":              "taxonomy_changed",
+    "regime_classifier_version":     "classifier_methodology_changed",
+    "calibration_engine_version":    "calibration_methodology_changed",
 }
 
 
@@ -299,6 +306,7 @@ def _classify(
     recorded_envelope: dict,
     current_payload: dict,
     registry_path_for_provenance: Path,
+    audit_path: Optional[Path] = None,
 ) -> dict:
     """Decide which of the five replay states applies and build the
     payload that ``replay_run`` returns and emits.
@@ -308,6 +316,11 @@ def _classify(
       volatile-stripped equal                  → semantically_equivalent
       stripped differs + ≥1 driver             → expected_divergence
       stripped differs + zero drivers          → invalid_replay (per default)
+
+    ``audit_path`` is consulted for kind-specific driver detection
+    (currently regime_dependency_superseded on calibration_report
+    payloads). Backward-compatible default of None preserves
+    callers that don't have an audit_path handy.
     """
     from backend.investment_analytics.methodology import current_methodology
     from backend.investment_analytics.provenance import capture_provenance_inputs
@@ -368,6 +381,17 @@ def _classify(
     # distinguishable on replay rather than collapsing into a generic
     # "differs without driver" → invalid_replay outcome.
     drivers.extend(_identify_payload_drivers(rec_sanitized, cur_sanitized))
+    # Per-kind custom drivers: walks the chain to detect supersession
+    # of regime_summary rows that the recorded payload depends on.
+    # First-class driver kept distinct from generic methodology drift
+    # because the remediation paths differ (refresh the calibration
+    # vs revisit the regime classifier).
+    if audit_path is not None and isinstance(recorded_payload, dict):
+        derived_from = recorded_payload.get("derived_from_run_ids") or []
+        if derived_from:
+            drivers.extend(_detect_regime_dependency_superseded(
+                audit_path, list(derived_from),
+            ))
     diff_keys = _top_level_diff_keys(rec_stripped, cur_stripped)
 
     if drivers:
@@ -684,6 +708,239 @@ def _replay_regime_summary(
     return payload
 
 
+def _detect_regime_dependency_superseded(
+    audit_path: Path,
+    derived_from_run_ids: List[str],
+) -> List[dict]:
+    """First-class replay driver for calibration_report and any
+    future kind that derives from regime_summary lineage.
+
+    Walks the chain ONCE collecting every regime_summary's
+    supersedes_run_id field, then checks whether any cited
+    derived_from_run_ids has been superseded by a newer claim.
+
+    Returns a list of driver dicts (one per superseded dependency)
+    so calibration consumers can see WHICH regime claim was
+    invalidated, not just THAT something was invalidated. Calibration
+    authority is contingent on the regime claims it was built on —
+    surfacing the specific superseded link is the forensic value
+    operators need to decide whether to refresh the calibration.
+
+    Intentionally NOT collapsed into the generic
+    ``classifier_methodology_changed`` driver: a calibration whose
+    regime CLAIMS were superseded is operationally different from
+    a calibration whose regime METHODOLOGY drifted. The first means
+    "the partition you used is no longer the current partition";
+    the second means "the rules that produce partitions have
+    themselves changed." Different remediation paths.
+    """
+    if not derived_from_run_ids:
+        return []
+    if not audit_path.exists():
+        return []
+    # Build superseded-by index in one chain pass.
+    superseded_by: Dict[str, str] = {}
+    with audit_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            event = record.get("event", {})
+            if event.get("evidence_kind") != "regime_summary":
+                continue
+            target = event.get("supersedes_run_id")
+            if target:
+                superseded_by[target] = event["run_id"]
+    drivers: List[dict] = []
+    for cited in derived_from_run_ids:
+        if cited in superseded_by:
+            drivers.append({
+                "kind":            "regime_dependency_superseded",
+                "superseded_run_id":  cited,
+                "superseded_by_run_id": superseded_by[cited],
+                "note": (
+                    "calibration authority is contingent on the cited "
+                    "regime_summary; that claim has been superseded by "
+                    "a newer regime methodology"
+                ),
+            })
+    return drivers
+
+
+def _replay_calibration_report(
+    audit_event: dict,
+    recorded_envelope: dict,
+    registry_path: Path,
+) -> dict:
+    """Replay a calibration_report row.
+
+    Re-runs the calibration engine for the same target with the
+    same percentile against the CURRENT chain state. Step 7's
+    ``_classify`` then compares recorded vs current and surfaces
+    drift via:
+
+      - calibration_methodology_changed (payload-level driver)
+      - regime_dependency_superseded (custom driver appended by
+        the runner via _detect_regime_dependency_superseded)
+
+    Side-effect free: emit_audit is False through the lazy
+    re-invocation path; the replay handler does NOT itself append a
+    new calibration_report. The replay_result audit row that
+    documents the replay is emitted by ``replay_run`` (existing
+    Step 7 machinery), not by this handler.
+    """
+    from backend.calibration.runner import run_calibration
+
+    recorded_payload = recorded_envelope.get("payload", {})
+    target = recorded_payload.get("target_canonical_id") or recorded_payload.get("target")
+    basis = recorded_payload.get("calibration_basis") or {}
+    percentile = basis.get("percentile_used")
+
+    # The replay's re-derivation runs against the live chain at
+    # replay time — that's the whole point. ``run_calibration``
+    # would emit a NEW calibration_report; for replay we need the
+    # payload WITHOUT emit. Reuse the assembly path directly so
+    # replay does not mutate the chain.
+    return _rebuild_calibration_payload_for_replay(
+        target=target,
+        percentile=percentile,
+        audit_path_for_chain=_chain_path_from_evidence_path(
+            recorded_envelope, registry_path,
+        ),
+    )
+
+
+def _chain_path_from_evidence_path(
+    recorded_envelope: dict, registry_path: Path,
+) -> Path:
+    """Resolve the audit chain path that the replay handler should
+    consult. The runner's default chain lives at
+    ``<repo>/data/audit/audit.jsonl``; tests redirect via env or
+    monkey-patching. We trust the runner's default unless a future
+    extension passes the path explicitly through replay_run."""
+    from backend.calibration.runner import DEFAULT_AUDIT_PATH
+    return DEFAULT_AUDIT_PATH
+
+
+def _rebuild_calibration_payload_for_replay(
+    target: str,
+    percentile: Optional[float],
+    audit_path_for_chain: Path,
+) -> dict:
+    """Run the same code path as the runner but skip the emit step.
+    Returns the payload that WOULD have been emitted — Step 7's
+    classifier compares this against the recorded payload."""
+    from backend.calibration import config as cal_config
+    from backend.calibration.runner import (
+        _build_basis, _empty_basis, _recommendation_payload,
+        _refusal_payload,
+    )
+    from backend.calibration.sampling import (
+        assemble_per_regime_samples, passes_coverage_floors,
+    )
+    from backend.calibration.targets import (
+        DEFAULT_CACHE_DIR, REGISTERED_TARGETS, get_target,
+    )
+    from backend.calibration.percentiles import (
+        unweighted_median, weighted_percentile,
+    )
+
+    if (target not in cal_config.CALIBRATION_TARGETS
+            or target not in REGISTERED_TARGETS):
+        return _refusal_payload(
+            target_id=target, refusal_reason="target_unsupported",
+            percentile=percentile or 95.0,
+            basis=_empty_basis(target, percentile or 95.0),
+            derived_from_run_ids=[], derivation_depth=0,
+        )
+    target_obj = get_target(target)
+    pctl = percentile if percentile is not None else target_obj.default_percentile
+
+    buckets, consulted = assemble_per_regime_samples(
+        audit_path=audit_path_for_chain,
+        target=target_obj,
+        cache_dir=DEFAULT_CACHE_DIR,
+    )
+    if not buckets:
+        return _refusal_payload(
+            target_id=target, refusal_reason="insufficient_substrate",
+            percentile=pctl,
+            basis=_build_basis(
+                target_id=target, percentile=pctl,
+                buckets=[], consulted=consulted, samples_by_regime={},
+            ),
+            derived_from_run_ids=[], derivation_depth=0,
+        )
+
+    valid_signatures: List[dict] = []
+    excluded_signatures: List[dict] = []
+    per_regime_recommendations: List[float] = []
+    samples_by_regime: Dict[str, dict] = {}
+    derived_from_run_ids: List[str] = []
+    for bucket in buckets:
+        sig_key = json.dumps(bucket.regime_signature,
+                             sort_keys=True, separators=(",", ":"))
+        passed, refusal = passes_coverage_floors(bucket)
+        per_regime_entry: Dict[str, Any] = {
+            "regime_class":         bucket.regime_class,
+            "n":                    bucket.raw_observation_count,
+            "effective_weight":     bucket.effective_weight_total,
+            "coverage_quality_mix": bucket.coverage_quality_mix,
+            "contributing_run_ids": list(bucket.contributing_run_ids),
+        }
+        if passed:
+            v = round(weighted_percentile(list(bucket.samples), pctl), 6)
+            per_regime_entry["percentile_value"] = v
+            per_regime_entry["status"] = "included"
+            valid_signatures.append(bucket.regime_signature)
+            per_regime_recommendations.append(v)
+            derived_from_run_ids.extend(bucket.contributing_run_ids)
+        else:
+            per_regime_entry["percentile_value"] = None
+            per_regime_entry["status"] = "excluded"
+            per_regime_entry["per_regime_refusal_reason"] = refusal
+            excluded_signatures.append(bucket.regime_signature)
+        samples_by_regime[sig_key] = per_regime_entry
+
+    basis = _build_basis(
+        target_id=target, percentile=pctl,
+        buckets=buckets, consulted=consulted,
+        samples_by_regime=samples_by_regime,
+    )
+
+    if not valid_signatures:
+        all_failed_on_confidence = all(
+            samples_by_regime[k].get("per_regime_refusal_reason")
+            == "confidence_floor_unmet"
+            for k in samples_by_regime
+        )
+        aggregate_refusal = (
+            "confidence_floor_unmet" if all_failed_on_confidence
+            else "insufficient_coverage"
+        )
+        payload = _refusal_payload(
+            target_id=target, refusal_reason=aggregate_refusal,
+            percentile=pctl, basis=basis,
+            derived_from_run_ids=[], derivation_depth=0,
+        )
+        payload["calibration_scope"]["excluded_regimes"] = excluded_signatures
+        return payload
+
+    return _recommendation_payload(
+        target_id=target,
+        recommendation=round(unweighted_median(per_regime_recommendations), 6),
+        percentile=pctl,
+        valid_signatures=valid_signatures,
+        excluded_signatures=excluded_signatures,
+        basis=basis,
+        derived_from_run_ids=sorted(set(derived_from_run_ids)),
+        derivation_depth=1,
+    )
+
+
 def _replay_drift_analysis(
     audit_event: dict,
     recorded_envelope: dict,
@@ -735,6 +992,7 @@ REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
     "experiment_run":            _replay_experiment_run,
     "regime_summary":            _replay_regime_summary,
     "drift_analysis":            _replay_drift_analysis,
+    "calibration_report":        _replay_calibration_report,
 }
 
 
@@ -867,7 +1125,10 @@ def replay_run(
             return _finalize(audit_path, run_id, evidence_kind, result,
                              int((monotonic() - start) * 1000), emit_audit)
 
-        classification = _classify(recorded_envelope, current_payload, reg)
+        classification = _classify(
+            recorded_envelope, current_payload, reg,
+            audit_path=audit_path,
+        )
     finally:
         cache_tracker.stop_tracking()
     duration_ms = int((monotonic() - start) * 1000)

@@ -97,6 +97,7 @@ EVIDENCE_KINDS: frozenset[str] = frozenset({
     "replay_result",
     "drift_analysis",
     "regime_summary",
+    "calibration_report",
 })
 
 

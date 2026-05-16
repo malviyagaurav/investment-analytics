@@ -54,8 +54,11 @@ from backend.investment_analytics.provenance import (
 
 class TestEvidenceKindsEnum(unittest.TestCase):
 
-    def test_closed_enum_has_exactly_seven_values(self) -> None:
-        self.assertEqual(len(EVIDENCE_KINDS), 7)
+    def test_closed_enum_has_exactly_eight_values(self) -> None:
+        # Step 11 added "calibration_report" — closed-enum extension
+        # under governance review (envelope_schema_fingerprint shifts
+        # on new rows; existing rows remain byte-frozen).
+        self.assertEqual(len(EVIDENCE_KINDS), 8)
 
     def test_expected_values_present(self) -> None:
         expected = {
@@ -66,6 +69,7 @@ class TestEvidenceKindsEnum(unittest.TestCase):
             "replay_result",
             "drift_analysis",
             "regime_summary",
+            "calibration_report",
         }
         self.assertEqual(EVIDENCE_KINDS, expected)
 
@@ -83,14 +87,14 @@ class TestEvidenceKindsEnum(unittest.TestCase):
 
 class TestMethodology(unittest.TestCase):
 
-    def test_nine_components_present(self) -> None:
-        # Step 10 added "regime_classifier" — METHODOLOGY_SCHEMA_VERSION
-        # bumped from v1 to v2 to reflect the structural change.
+    def test_ten_components_present(self) -> None:
+        # Step 10 added "regime_classifier" (schema v1 → v2).
+        # Step 11 added "calibration_engine" (schema v2 → v3).
         expected = {
             "equity_metric", "debt_metric", "gold_metric",
             "confidence", "coverage_integrity", "alternative_gate",
             "correlation_detection", "decision_engine",
-            "regime_classifier",
+            "regime_classifier", "calibration_engine",
         }
         self.assertEqual(set(METHODOLOGY_VERSIONS.keys()), expected)
 
