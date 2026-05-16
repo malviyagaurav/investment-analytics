@@ -1,7 +1,14 @@
-# Linux cron equivalent of the launchd job (weekdays 21:30 local).
+# Linux cron equivalent of the scheduler launchd job (weekdays 21:30 local).
 # Add to your crontab via:  crontab -e
+#
+# Step 12 replaced the prior watchlist-only entry with this single
+# scheduler entry. The scheduler orchestrates the full daily evidence
+# cadence (watchlist → regimes_emit → calibration → audit_verify)
+# from one invocation, acquires a non-blocking fcntl lock to refuse
+# concurrent runs cleanly, and emits one scheduled_run audit-only
+# event per cadence tick.
 #
 # Adjust the absolute path below to match your install location, then
 # paste the line WITHOUT the leading '#'.
 
-# 30 21 * * 1-5  cd /Users/snapdevio/Documents/investment-analytics && /Users/snapdevio/Documents/investment-analytics/venv/bin/python -m backend.jobs.watchlist run >> logs/watchlist.out.log 2>> logs/watchlist.err.log
+# 30 21 * * 1-5  cd /Users/snapdevio/Documents/investment-analytics && /Users/snapdevio/Documents/investment-analytics/venv/bin/python -m backend.scheduler run-cadence daily_weekday_evening >> logs/scheduler.out.log 2>> logs/scheduler.err.log

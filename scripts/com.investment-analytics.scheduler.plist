@@ -1,16 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  macOS launchd job — runs the watchlist snapshot every weekday at
-  21:30 IST (16:00 UTC). 21:30 IST is after AMFI publishes EOD NAV,
-  so the snapshot reflects the day's actual closing values.
+  macOS launchd job — runs the daily evidence cadence every weekday
+  at 21:30 IST (16:00 UTC). 21:30 IST is after AMFI publishes EOD
+  NAV, so all evidence emitted in the cadence reflects the day's
+  actual closing values.
+
+  Step 12 replaced the prior watchlist-only entry with this single
+  scheduler entry. The cadence DAG is hardcoded in
+  backend/scheduler/dag.py and currently runs:
+
+    watchlist_run
+      → regimes_emit_recent_window
+          → calibration_correlation
+    audit_verify  (always; final integrity gate)
+
+  All sub-jobs run as fresh Python subprocesses for code_sha
+  freshness and crash isolation. The scheduler acquires a
+  non-blocking fcntl lock at data/scheduler/.lock; concurrent
+  launches refuse cleanly and log to
+  data/scheduler/last_lock_conflict.json plus stderr.
 
   To install:
-    cp scripts/com.investment-analytics.watchlist.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/com.investment-analytics.watchlist.plist
+    cp scripts/com.investment-analytics.scheduler.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.investment-analytics.scheduler.plist
 
   To uninstall:
-    launchctl unload ~/Library/LaunchAgents/com.investment-analytics.watchlist.plist
-    rm ~/Library/LaunchAgents/com.investment-analytics.watchlist.plist
+    launchctl unload ~/Library/LaunchAgents/com.investment-analytics.scheduler.plist
+    rm ~/Library/LaunchAgents/com.investment-analytics.scheduler.plist
 
   Edit the WorkingDirectory + Program Arguments below to match your
   install path before installing.
@@ -20,7 +36,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.investment-analytics.watchlist</string>
+    <string>com.investment-analytics.scheduler</string>
 
     <key>WorkingDirectory</key>
     <string>/Users/snapdevio/Documents/investment-analytics</string>
@@ -29,8 +45,9 @@
     <array>
         <string>/Users/snapdevio/Documents/investment-analytics/venv/bin/python</string>
         <string>-m</string>
-        <string>backend.jobs.watchlist</string>
-        <string>run</string>
+        <string>backend.scheduler</string>
+        <string>run-cadence</string>
+        <string>daily_weekday_evening</string>
     </array>
 
     <!--
@@ -69,9 +86,9 @@
     </array>
 
     <key>StandardOutPath</key>
-    <string>/Users/snapdevio/Documents/investment-analytics/logs/watchlist.out.log</string>
+    <string>/Users/snapdevio/Documents/investment-analytics/logs/scheduler.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/snapdevio/Documents/investment-analytics/logs/watchlist.err.log</string>
+    <string>/Users/snapdevio/Documents/investment-analytics/logs/scheduler.err.log</string>
 
     <key>RunAtLoad</key>
     <false/>
