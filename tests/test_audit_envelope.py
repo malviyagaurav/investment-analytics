@@ -54,11 +54,14 @@ from backend.investment_analytics.provenance import (
 
 class TestEvidenceKindsEnum(unittest.TestCase):
 
-    def test_closed_enum_has_exactly_eight_values(self) -> None:
-        # Step 11 added "calibration_report" — closed-enum extension
-        # under governance review (envelope_schema_fingerprint shifts
-        # on new rows; existing rows remain byte-frozen).
-        self.assertEqual(len(EVIDENCE_KINDS), 8)
+    def test_closed_enum_has_exactly_nine_values(self) -> None:
+        # Step 11 added "calibration_report".
+        # Step 13 added "threshold_recommendation" — typed promotion-
+        # candidate projection of a calibration_report.recommendation
+        # field into its own evidence kind. Closed-enum extension
+        # shifts envelope_schema_fingerprint on new rows; existing
+        # rows remain byte-frozen.
+        self.assertEqual(len(EVIDENCE_KINDS), 9)
 
     def test_expected_values_present(self) -> None:
         expected = {
@@ -70,6 +73,7 @@ class TestEvidenceKindsEnum(unittest.TestCase):
             "drift_analysis",
             "regime_summary",
             "calibration_report",
+            "threshold_recommendation",
         }
         self.assertEqual(EVIDENCE_KINDS, expected)
 

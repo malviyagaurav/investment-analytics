@@ -983,6 +983,120 @@ def _replay_drift_analysis(
     )
 
 
+def _replay_threshold_recommendation(
+    audit_event: dict,
+    recorded_envelope: dict,
+    registry_path: Path,
+) -> dict:
+    """Replay a threshold_recommendation row.
+
+    Re-locates the cited calibration_report and re-projects its
+    recommendation into the same payload shape. Step 7's
+    ``_classify`` then compares recorded vs current.
+
+    ## Load-bearing refusal-projection guard (mirrors emit-side)
+
+    If the cited calibration_report has become (or always was) a
+    typed REFUSAL (recommendation=null), the handler RAISES. Step 7's
+    handler-raises-→-invalid_replay contract maps this to a typed
+    invalid_replay state. This keeps the anti-evidence-laundering
+    invariant honored at REPLAY as well as at EMIT: a typed wrapper
+    cannot turn a non-recommendation into a recommendation, at any
+    layer or at any point in time.
+    """
+    from backend.calibration.config import CALIBRATION_TARGETS
+    from backend.research_artifacts.runner import (
+        _load_evidence_payload,
+        DEFAULT_AUDIT_PATH,
+    )
+
+    recorded_payload = recorded_envelope.get("payload", {})
+    calibration_run_id = recorded_payload.get(
+        "derived_from_calibration_report_run_id",
+    )
+    if not calibration_run_id:
+        raise RuntimeError(
+            "replay refused: recorded threshold_recommendation has no "
+            "derived_from_calibration_report_run_id"
+        )
+
+    cal_record = find_record_by_run_id(DEFAULT_AUDIT_PATH, calibration_run_id)
+    if cal_record is None:
+        raise RuntimeError(
+            f"replay refused: cited calibration_report "
+            f"{calibration_run_id!r} not found in current chain"
+        )
+    cal_event = cal_record.get("event", {})
+    if cal_event.get("evidence_kind") != "calibration_report":
+        raise RuntimeError(
+            f"replay refused: cited run_id {calibration_run_id!r} has "
+            f"evidence_kind={cal_event.get('evidence_kind')!r}, "
+            f"expected 'calibration_report'"
+        )
+
+    # Refusal-projection guard — same rule as emit. A calibration
+    # that has become / always was a typed refusal cannot be
+    # projected into a threshold_recommendation.
+    if cal_event.get("recommendation") is None:
+        raise RuntimeError(
+            f"replay refused: cited calibration {calibration_run_id!r} "
+            f"is a typed refusal (refusal_reason="
+            f"{cal_event.get('refusal_reason')!r}); "
+            f"threshold_recommendation cannot be projected from a "
+            f"non-recommendation"
+        )
+
+    target = cal_event.get("target")
+    if target not in CALIBRATION_TARGETS:
+        raise RuntimeError(
+            f"replay refused: cited calibration targets {target!r}, "
+            f"not in CALIBRATION_TARGETS"
+        )
+
+    cal_evidence_ref = cal_event.get("evidence_ref")
+    if not cal_evidence_ref:
+        raise RuntimeError(
+            "replay refused: cited calibration_report has no evidence_ref"
+        )
+    cal_payload = _load_evidence_payload(
+        DEFAULT_AUDIT_PATH, cal_evidence_ref,
+    )
+
+    recommended_value = cal_payload.get("recommendation")
+    if recommended_value is None:
+        raise RuntimeError(
+            "replay refused: audit/evidence mismatch — calibration row "
+            "shows non-null recommendation but evidence payload shows null"
+        )
+
+    cal_scope = cal_payload.get("calibration_scope", {}) or {}
+    recommendation_scope = {
+        "valid_within_regimes":  cal_scope.get("valid_within_regimes", []),
+        "assumed_stationarity":  cal_scope.get(
+            "assumed_stationarity",
+            "(not recorded on cited calibration)",
+        ),
+        "known_limitations":     cal_scope.get("known_limitations", []),
+    }
+
+    # Preserve recorded environmental fields the replay can't
+    # recompute deterministically.
+    return {
+        "schema_version":         recorded_payload.get(
+            "schema_version", "v1"),
+        "target_canonical_id":    target,
+        "recommended_value":      recommended_value,
+        "recommendation_scope":   recommendation_scope,
+        "adoption_status":        recorded_payload.get(
+            "adoption_status", "proposed"),
+        "derived_from_calibration_report_run_id": calibration_run_id,
+        "supersedes_run_id":      recorded_payload.get("supersedes_run_id"),
+        "methodology_kind":       "data_driven_variant",
+        "non_semantic_metadata":  recorded_payload.get(
+            "non_semantic_metadata", {}),
+    }
+
+
 ReplayHandler = Callable[[dict, dict, Path], dict]
 
 REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
@@ -993,6 +1107,7 @@ REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
     "regime_summary":            _replay_regime_summary,
     "drift_analysis":            _replay_drift_analysis,
     "calibration_report":        _replay_calibration_report,
+    "threshold_recommendation":  _replay_threshold_recommendation,
 }
 
 

@@ -98,6 +98,7 @@ EVIDENCE_KINDS: frozenset[str] = frozenset({
     "drift_analysis",
     "regime_summary",
     "calibration_report",
+    "threshold_recommendation",
 })
 
 
