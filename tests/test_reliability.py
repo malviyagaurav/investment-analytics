@@ -10,8 +10,8 @@ Coverage map:
         unreproducible = +0.5 (SOFT penalty)
         others = +1.0
     - reliability_weighting in METHODOLOGY_VERSIONS
-    - METHODOLOGY_SCHEMA_VERSION = "v4"
-    - EVIDENCE_KINDS has reliability_score (10 total)
+    - METHODOLOGY_SCHEMA_VERSION = "v5" (Step 15 bumped)
+    - EVIDENCE_KINDS has reliability_score (11 total after Step 15)
     - WEIGHTING_TABLE_THRESHOLD_RECOMMENDATION sums to 1.0
     - K_REFUSAL_FLOOR = 4
 
@@ -115,9 +115,12 @@ class GovernanceTests(unittest.TestCase):
     def test_reliability_score_in_evidence_kinds(self) -> None:
         self.assertIn("reliability_score", EVIDENCE_KINDS)
 
-    def test_methodology_schema_v4_after_step_14(self) -> None:
-        self.assertEqual(meth_mod.METHODOLOGY_SCHEMA_VERSION, "v4")
+    def test_methodology_schema_v5_after_step_15(self) -> None:
+        # Step 15 bumped v4 → v5 (governance_eligibility). The
+        # reliability_weighting component remains present and v1.
+        self.assertEqual(meth_mod.METHODOLOGY_SCHEMA_VERSION, "v5")
         self.assertIn("reliability_weighting", meth_mod.METHODOLOGY_VERSIONS)
+        self.assertIn("governance_eligibility", meth_mod.METHODOLOGY_VERSIONS)
 
     def test_weighting_table_sums_to_one(self) -> None:
         s = sum(WEIGHTING_TABLE_THRESHOLD_RECOMMENDATION.values())

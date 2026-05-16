@@ -58,24 +58,29 @@ from __future__ import annotations
 # schema version. Existing audit rows are byte-untouched; new rows
 # carry the v4 dict and a new ENVELOPE_SCHEMA_FINGERPRINT, surfacing
 # the structural change as explicit drift on replay.
-METHODOLOGY_SCHEMA_VERSION = "v4"
+# v5: added "governance_eligibility" component (Step 15). Eligibility
+# is engineered policy (reliability floor, lineage integrity), not
+# inference — but the threshold values and check ordering ARE
+# methodology and must surface on replay as typed drift.
+METHODOLOGY_SCHEMA_VERSION = "v5"
 
 
 # Source of truth. Each component is independently versioned per the
 # bump rules above. Adding a new component or removing one bumps
 # METHODOLOGY_SCHEMA_VERSION as well.
 METHODOLOGY_VERSIONS: dict[str, str] = {
-    "equity_metric":         "v1",
-    "debt_metric":           "v1",
-    "gold_metric":           "v1",
-    "confidence":            "v1",
-    "coverage_integrity":    "v1",
-    "alternative_gate":      "v1",
-    "correlation_detection": "v1",
-    "decision_engine":       "v1",
-    "regime_classifier":     "v1",
-    "calibration_engine":    "v1",
-    "reliability_weighting": "v1",
+    "equity_metric":          "v1",
+    "debt_metric":            "v1",
+    "gold_metric":            "v1",
+    "confidence":             "v1",
+    "coverage_integrity":     "v1",
+    "alternative_gate":       "v1",
+    "correlation_detection":  "v1",
+    "decision_engine":        "v1",
+    "regime_classifier":      "v1",
+    "calibration_engine":     "v1",
+    "reliability_weighting":  "v1",
+    "governance_eligibility": "v1",
 }
 
 

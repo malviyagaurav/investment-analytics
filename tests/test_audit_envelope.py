@@ -58,10 +58,12 @@ class TestEvidenceKindsEnum(unittest.TestCase):
         # Step 11 added "calibration_report".
         # Step 13 added "threshold_recommendation".
         # Step 14 added "reliability_score" — typed aggregation over
-        # existing evidence that scores epistemic credibility. Closed-
-        # enum extension shifts envelope_schema_fingerprint on new
+        # existing evidence that scores epistemic credibility.
+        # Step 15 added "governance_decision" — typed operator
+        # decisions about production promotion. Closed-enum
+        # extension shifts envelope_schema_fingerprint on new
         # rows; existing rows remain byte-frozen.
-        self.assertEqual(len(EVIDENCE_KINDS), 10)
+        self.assertEqual(len(EVIDENCE_KINDS), 11)
 
     def test_expected_values_present(self) -> None:
         expected = {
@@ -75,6 +77,7 @@ class TestEvidenceKindsEnum(unittest.TestCase):
             "calibration_report",
             "threshold_recommendation",
             "reliability_score",
+            "governance_decision",
         }
         self.assertEqual(EVIDENCE_KINDS, expected)
 
@@ -92,16 +95,17 @@ class TestEvidenceKindsEnum(unittest.TestCase):
 
 class TestMethodology(unittest.TestCase):
 
-    def test_eleven_components_present(self) -> None:
-        # Step 10 added "regime_classifier" (schema v1 → v2).
-        # Step 11 added "calibration_engine" (schema v2 → v3).
-        # Step 14 added "reliability_weighting" (schema v3 → v4).
+    def test_twelve_components_present(self) -> None:
+        # Step 10 added "regime_classifier"      (schema v1 → v2).
+        # Step 11 added "calibration_engine"     (schema v2 → v3).
+        # Step 14 added "reliability_weighting"  (schema v3 → v4).
+        # Step 15 added "governance_eligibility" (schema v4 → v5).
         expected = {
             "equity_metric", "debt_metric", "gold_metric",
             "confidence", "coverage_integrity", "alternative_gate",
             "correlation_detection", "decision_engine",
             "regime_classifier", "calibration_engine",
-            "reliability_weighting",
+            "reliability_weighting", "governance_eligibility",
         }
         self.assertEqual(set(METHODOLOGY_VERSIONS.keys()), expected)
 

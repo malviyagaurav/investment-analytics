@@ -100,6 +100,7 @@ EVIDENCE_KINDS: frozenset[str] = frozenset({
     "calibration_report",
     "threshold_recommendation",
     "reliability_score",
+    "governance_decision",
 })
 
 

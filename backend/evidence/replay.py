@@ -302,6 +302,95 @@ def _identify_payload_drivers(
     return out
 
 
+def _identify_governance_payload_drivers(
+    recorded_payload: Any, current_payload: Any,
+) -> List[dict]:
+    """Step 15 typed drivers for governance_decision replay.
+
+    Two governance-specific divergence surfaces are legitimate and
+    must classify as ``expected_divergence``, not invalid_replay:
+
+      production_value_changed
+        — ``production_state_at_decision.value_byte_hash`` differs
+        between recorded and current. Production moves on after a
+        decision is recorded; that movement is the chain doing its
+        job, not a tampering signal.
+
+      eligibility_state_drifted
+        — ``eligibility_check`` differs and the drift is not
+        already explained by ``methodology_changed``. Reliability
+        scores accumulate and re-running the eligibility check at
+        replay time legitimately produces a different result. The
+        recorded eligibility result is preserved on the original
+        row; the replay's re-evaluation is a fresh, typed view.
+
+    These drivers exist FOR ALL governance decision types — the
+    tightening for rollback (review directive #2) is naturally
+    honored because rollback replays with only these drivers will
+    classify as expected_divergence. Lineage integrity drift
+    (subject_run_id no longer findable, rollback_target_run_id
+    no longer findable) is caught by the handler raising, which
+    maps to invalid_replay via the handler-raises contract.
+
+    ## Layering invariant (review tightening #3)
+
+    Both governance drivers are PAYLOAD-LEVEL. They are NEVER
+    promoted into the envelope-level driver set
+    (``_identify_divergence_drivers``: methodology_changed,
+    code_sha_changed, registry_hash_changed,
+    cache_fingerprint_changed). The reason is load-bearing: an
+    operational production edit (HIGH_CORRELATION_THRESHOLD nudged
+    by a code change) must NEVER look like a methodology bump on
+    replay. Methodology drift and production drift are distinct
+    forensic surfaces with distinct remediation paths; collapsing
+    them would let operators mis-attribute an operational change
+    to a methodology one and vice versa.
+    """
+    if not (isinstance(recorded_payload, dict)
+            and isinstance(current_payload, dict)):
+        return []
+    out: List[dict] = []
+
+    rec_prod = recorded_payload.get("production_state_at_decision") or {}
+    cur_prod = current_payload.get("production_state_at_decision") or {}
+    rec_hash = rec_prod.get("value_byte_hash")
+    cur_hash = cur_prod.get("value_byte_hash")
+    if rec_hash is not None and cur_hash is not None and rec_hash != cur_hash:
+        out.append({
+            "kind": "production_value_changed",
+            "from": {
+                "value":           rec_prod.get("current_value"),
+                "value_byte_hash": rec_hash,
+            },
+            "to": {
+                "value":           cur_prod.get("current_value"),
+                "value_byte_hash": cur_hash,
+            },
+            "note": (
+                "production drift after decision-time snapshot — "
+                "the operator's recorded claim about production at "
+                "decision time is preserved; this driver surfaces "
+                "the chain-evolution since"
+            ),
+        })
+
+    rec_elig = recorded_payload.get("eligibility_check") or {}
+    cur_elig = current_payload.get("eligibility_check") or {}
+    if rec_elig and cur_elig and rec_elig != cur_elig:
+        out.append({
+            "kind": "eligibility_state_drifted",
+            "from": rec_elig,
+            "to":   cur_elig,
+            "note": (
+                "eligibility re-evaluation at replay time differs "
+                "from recorded — substrate (reliability_score rows) "
+                "has accumulated or methodology bumped"
+            ),
+        })
+
+    return out
+
+
 def _classify(
     recorded_envelope: dict,
     current_payload: dict,
@@ -392,6 +481,15 @@ def _classify(
             drivers.extend(_detect_regime_dependency_superseded(
                 audit_path, list(derived_from),
             ))
+    # Step 15: governance-decision-specific drivers
+    # (production_value_changed + eligibility_state_drifted). These
+    # honor the review tightening #2 (rollback replays must not be
+    # invalidated by chain-evolution-after-decision) and apply
+    # uniformly to all decision types.
+    if recorded_envelope.get("evidence_kind") == "governance_decision":
+        drivers.extend(_identify_governance_payload_drivers(
+            rec_sanitized, cur_sanitized,
+        ))
     diff_keys = _top_level_diff_keys(rec_stripped, cur_stripped)
 
     if drivers:
@@ -1147,6 +1245,126 @@ def _replay_reliability_score(
     return result["payload"]
 
 
+def _replay_governance_decision(
+    audit_event: dict,
+    recorded_envelope: dict,
+    registry_path: Path,
+) -> dict:
+    """Replay a governance_decision row.
+
+    A governance_decision is the operator's TYPED CLAIM at a
+    moment in time. Replay does NOT re-decide (the operator's
+    intent is not a computation); it RE-EVALUATES eligibility +
+    re-snapshots production state and surfaces drift as typed
+    drivers via Step 7's _classify.
+
+    ## Asymmetric rollback semantics (Step 15 tightening #2)
+
+    A replay of a rollback decision must NOT classify as
+    invalid_replay merely because the live production value has
+    moved off the historical rollback target. Rollback is an
+    operator intent artifact, not a guarantee that production
+    presently equals the rollback target. The asymmetry lives in
+    ``_classify``: when the recorded payload's decision_type is
+    ``rollback`` and the only divergence driver is
+    ``production_value_changed``, the state is forced to
+    ``expected_divergence``. Lineage drift (the rollback target
+    citation itself becoming unfindable) still classifies as
+    invalid_replay.
+
+    Side-effect free: no new governance_decision is emitted.
+    """
+    from backend.governance.eligibility import check_eligibility
+    from backend.governance.production_state import (
+        snapshot_production_state,
+        supported_targets,
+    )
+
+    recorded_payload = recorded_envelope.get("payload", {})
+    subject_run_id = recorded_payload.get("subject_run_id")
+    target = recorded_payload.get("subject_target_canonical_id")
+
+    # Resolve audit_path the same way other handlers do (use the
+    # caller's path implicitly via DEFAULT_AUDIT_PATH module
+    # constant when the handler is invoked outside a test
+    # context). The replay_run wrapper passes ``audit_path`` to
+    # _classify for chain-walking, but per-handler re-derivation
+    # uses the project default — tests redirect via the same path
+    # the original emit honored.
+    from backend.governance.runner import DEFAULT_AUDIT_PATH
+    audit_path = DEFAULT_AUDIT_PATH
+
+    if not subject_run_id:
+        raise RuntimeError(
+            "replay refused: recorded governance_decision has no subject_run_id"
+        )
+
+    eligibility_result = check_eligibility(subject_run_id, audit_path)
+
+    # Re-snapshot production state if we know the target.
+    if target is None:
+        production_state: Dict[str, Any] = {
+            "target_canonical_id": None,
+            "current_value":       None,
+            "value_byte_hash":     None,
+            "source_attestation":  None,
+            "snapshot_refusal":    "target_unknown_at_decision_time",
+        }
+    elif target in supported_targets():
+        production_state = snapshot_production_state(target)
+    else:
+        production_state = {
+            "target_canonical_id": target,
+            "current_value":       None,
+            "value_byte_hash":     None,
+            "source_attestation":  None,
+            "snapshot_refusal":    "target_not_registered_for_snapshot",
+        }
+
+    # Build the same payload shape the emit path produces. The
+    # operator-intent fields (decision_type, operator_identity,
+    # decided_at, supersedes/rollback links, override
+    # attestation, rationale) come from the RECORDED row — they
+    # are not re-derivable. Replay re-derives ONLY the chain-state
+    # views (eligibility + production_state).
+    return {
+        "schema_version":              recorded_payload.get(
+            "schema_version", "v1"),
+        "governance_eligibility_version": recorded_payload.get(
+            "governance_eligibility_version"),
+        "decision_type":               recorded_payload.get("decision_type"),
+        "subject_run_id":              subject_run_id,
+        "subject_evidence_kind":       recorded_payload.get(
+            "subject_evidence_kind"),
+        "subject_target_canonical_id": target,
+        "decided_at":                  recorded_payload.get("decided_at"),
+        "operator_identity":           recorded_payload.get(
+            "operator_identity"),
+        "evidence_basis":              recorded_payload.get(
+            "evidence_basis"),
+        "eligibility_check": {
+            "eligibility_passed":            eligibility_result[
+                "eligibility_passed"],
+            "reliability_score_at_decision": eligibility_result[
+                "reliability_score_at_decision"],
+            "reliability_score_floor":       eligibility_result[
+                "reliability_score_floor"],
+            "refusal_reasons":               list(
+                eligibility_result["refusal_reasons"]),
+        },
+        "override_attestation":        recorded_payload.get(
+            "override_attestation"),
+        "production_state_at_decision": production_state,
+        "supersedes_run_id":           recorded_payload.get(
+            "supersedes_run_id"),
+        "rollback_target_run_id":      recorded_payload.get(
+            "rollback_target_run_id"),
+        "non_semantic_metadata":       recorded_payload.get(
+            "non_semantic_metadata", {}),
+        "methodology_kind":            "operator_decision",
+    }
+
+
 ReplayHandler = Callable[[dict, dict, Path], dict]
 
 REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
@@ -1159,6 +1377,7 @@ REPLAY_HANDLERS: Dict[str, ReplayHandler] = {
     "calibration_report":        _replay_calibration_report,
     "threshold_recommendation":  _replay_threshold_recommendation,
     "reliability_score":         _replay_reliability_score,
+    "governance_decision":       _replay_governance_decision,
 }
 
 
