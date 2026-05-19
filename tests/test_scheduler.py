@@ -65,6 +65,10 @@ from unittest.mock import patch
 
 from backend.evidence.store import emit_evidence
 from backend.investment_analytics import methodology as meth_mod
+from backend.investment_analytics._locking import (
+    acquire_exclusive_blocking,
+    release as release_exclusive,
+)
 from backend.investment_analytics.audit import (
     append_audit_record,
     verify_audit_chain,
@@ -345,13 +349,14 @@ class RefusalPropagationTests(_SchedulerHarness):
 class LockTests(_SchedulerHarness):
 
     def test_concurrent_run_refused_lock_conflict_recorded(self) -> None:
-        # Manually hold the lock in this test process; a second
-        # invocation must refuse cleanly without emitting a row.
-        import fcntl
+        # Manually hold the lock in this test process via the typed
+        # cross-platform adapter (NOT raw fcntl, which is POSIX-only
+        # and breaks on Windows CI). A second invocation must refuse
+        # cleanly without emitting a row.
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(self.lock_path),
                      os.O_CREAT | os.O_WRONLY, 0o644)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        acquire_exclusive_blocking(fd)
         try:
             buf = io.StringIO()
             with redirect_stderr(buf):
@@ -378,7 +383,7 @@ class LockTests(_SchedulerHarness):
                 [],
             )
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            release_exclusive(fd)
             os.close(fd)
 
     def test_lock_released_on_completion(self) -> None:
