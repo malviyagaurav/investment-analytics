@@ -184,11 +184,14 @@ def _acquire_scheduler_lock(lock_path: Path) -> Optional[int]:
     a soft fallback that would let two schedulers run.
 
     On Windows ``msvcrt.locking`` locks a byte range at the current
-    file position; the adapter seeks to byte 0 first, so all
-    processes contend on the same convention regardless of any
-    ``os.ftruncate`` / ``os.write`` the caller subsequently does.
-    The truncate-and-write-PID below operates AFTER the lock is
-    held, so it is safe."""
+    file position; the adapter seeks to a sparse offset
+    (``_LOCK_OFFSET`` in backend.investment_analytics._locking,
+    post-A1 `04ed947`) so all processes contend on the same well-
+    known byte AND the lock never overlaps real file content. The
+    truncate-and-write-PID below seeks back to byte 0 first so the
+    forensic PID lands at the start of the file rather than at the
+    sparse lock offset; on POSIX the seek is semantically a no-op
+    because fcntl.flock ignores byte offsets."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o644)
     # Wrap the adapter call so a propagating exception from
@@ -204,6 +207,15 @@ def _acquire_scheduler_lock(lock_path: Path) -> Optional[int]:
     if not acquired:
         os.close(fd)
         return None
+    # The locking adapter leaves the file position at _LOCK_OFFSET
+    # (a sparse offset on Windows, post-A1 `04ed947`). Seek back to
+    # byte 0 BEFORE the PID write so the forensic PID lands at the
+    # start of the file rather than at the sparse offset, which on
+    # Windows would create a 4-EiB-sized sparse file and confuse
+    # shutil.rmtree during test/operator cleanup. POSIX is unaffected:
+    # fcntl.flock ignores byte offsets, so the seek is a no-op there
+    # in semantic effect.
+    os.lseek(fd, 0, os.SEEK_SET)
     # Truncate + write PID for forensic visibility (not used for locking).
     os.ftruncate(fd, 0)
     os.write(fd, f"{os.getpid()}\n".encode())
