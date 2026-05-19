@@ -127,6 +127,17 @@ def _emit_linux_cron_hint(dry_run: bool) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Force UTF-8 on stdout before any write. The platform-specific
+    # templates (scheduler-task.xml comment block, plist comment
+    # block) contain non-ASCII glyphs (U+2192). On Windows the
+    # default console codepage is cp1252, which raises
+    # UnicodeEncodeError on `sys.stdout.write(rendered)` — observed
+    # as the windows-latest "Scheduler installer smoke test" failure.
+    # Real installs write the artifact to disk with an explicit
+    # encoding (utf-16 / utf-8) and are unaffected; only the
+    # `--dry-run` stdout path needed adjustment. Branchless: the
+    # reconfigure is a no-op on consoles already at UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description=(
             "Generate the OS-appropriate scheduler deployment artifact. "
