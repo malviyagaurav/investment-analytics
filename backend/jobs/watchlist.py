@@ -547,8 +547,19 @@ def run_snapshot(
             # Fall back to absolute when the snapshots dir lives outside
             # the repo root (test fixtures monkeypatch this).
             try:
-                category_refs[cat] = str(target.relative_to(ROOT))
+                # ``.as_posix()`` forces forward-slash separators so the
+                # path string is byte-canonical across hosts. ``str(Path)``
+                # would emit backslash on Windows and end up in both the
+                # sidecar and the ``no_change`` audit event's
+                # ``category_snapshot_refs`` field — non-canonical chain
+                # bytes. POSIX behavior is unchanged (already forward
+                # slash). Mirrors the R3 fix in ``write_evidence``.
+                category_refs[cat] = target.relative_to(ROOT).as_posix()
             except ValueError:
+                # Absolute-path fallback: intrinsically host-bound (drive
+                # letter on Windows, leading ``/`` on POSIX). Leaving as
+                # ``str(target)`` deliberately — see commit body for why
+                # canonicalizing this branch is a separate decision.
                 category_refs[cat] = str(target)
 
         record = _emit_watchlist_audit(
