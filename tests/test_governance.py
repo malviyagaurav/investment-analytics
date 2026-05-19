@@ -253,6 +253,17 @@ class _GovernanceHarness(unittest.TestCase):
         self.data_dir = Path(self.tmp.name)
         self.audit_path = self.data_dir / "audit" / "audit.jsonl"
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+        # Materialize a minimal registry fixture inside the tmpdir so
+        # replay tests don't depend on the developer-local
+        # data/registry/schemes.json (which is gitignored and absent
+        # in clean CI). Tests that exercise replay must pass
+        # registry_path=self.registry_path explicitly; otherwise
+        # replay_run falls back to the module DEFAULT_REGISTRY_PATH
+        # which short-circuits to state="unreproducible" with empty
+        # divergence_drivers in any environment lacking the file.
+        self.registry_path = self.data_dir / "registry" / "schemes.json"
+        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self.registry_path.write_text("{}", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -1052,6 +1063,7 @@ class ReplayTests(_GovernanceHarness):
                 run_id=run_id,
                 verify_chain=True,
                 emit_audit=False,
+                registry_path=self.registry_path,
             )
         finally:
             gov_runner.DEFAULT_AUDIT_PATH = orig
@@ -1087,6 +1099,7 @@ class ReplayTests(_GovernanceHarness):
                 run_id=run_id,
                 verify_chain=True,
                 emit_audit=False,
+                registry_path=self.registry_path,
             )
         finally:
             gov_runner.DEFAULT_AUDIT_PATH = orig
@@ -1262,6 +1275,7 @@ class ReplayTests(_GovernanceHarness):
                 run_id=run_id,
                 verify_chain=True,
                 emit_audit=False,
+                registry_path=self.registry_path,
             )
         finally:
             gov_runner.DEFAULT_AUDIT_PATH = orig_path
