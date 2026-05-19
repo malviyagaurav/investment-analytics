@@ -92,9 +92,13 @@ component, or replay driver.
   that legitimately need bounded waits; it is NEVER the default
   on POSIX.
 
-  ``msvcrt.locking`` is byte-range. We lock byte 0 with length 1
-  as the cross-platform convention so all processes contend on
-  the same byte regardless of their current file position.
+  ``msvcrt.locking`` is byte-range mandatory locking. We lock 1
+  byte at a sparse offset far beyond any plausible audit-file
+  size as the cross-platform convention: all processes contend
+  on the same well-known byte AND the lock never overlaps the
+  file's real content. Locking byte 0 would block same-process
+  readers (e.g. ``_last_record_hash``) that open a second handle
+  and read from the start of the file — see ``_LOCK_OFFSET``.
 
 ## What this module is NOT
 
@@ -125,10 +129,19 @@ class LockAcquisitionTimeout(RuntimeError):
 
 _IS_WINDOWS: Final[bool] = sys.platform.startswith("win")
 
-# Byte-range locking convention (Windows). All processes lock byte 0
-# with length 1 so contention is on a single well-known byte
-# regardless of the caller's current file position.
-_LOCK_OFFSET: Final[int] = 0
+# Byte-range locking convention (Windows). All processes lock 1
+# byte at a sparse offset far beyond any plausible audit-file size
+# so contention is on one well-known byte AND the locked region
+# never overlaps real file content. Windows byte-range locks are
+# MANDATORY: a lock at byte 0 caused ``_last_record_hash`` (which
+# opens a second handle and reads from byte 0) to fail with
+# PermissionError on every audit append. The sparse offset
+# preserves cross-process serialization (all writers seek+lock
+# the same byte) without blocking same-process readers. POSIX
+# ``fcntl.flock`` ignores byte offsets, so this constant is
+# Windows-only in effect; the unbounded-blocking POSIX semantic
+# documented above is unchanged.
+_LOCK_OFFSET: Final[int] = 0x4000_0000_0000_0000
 _LOCK_NBYTES: Final[int] = 1
 
 # Retry tuning. The blocking-acquire retry interval is short so
