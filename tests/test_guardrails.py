@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.investment_analytics.audit import append_audit_record, verify_audit_chain
 from backend.investment_analytics.compiler import compile_insight
@@ -830,13 +831,37 @@ class GuardrailTests(unittest.TestCase):
             analyze_portfolio_with_funds({"funds": []})
 
     def test_pwf_deterministic_ordering(self) -> None:
-        """Same input → same output ordering."""
+        """Same input → same output ordering.
+
+        Analytical outputs (weights, evidence levels, expense ratios,
+        ordering, names, hashes) MUST be deterministic across two
+        invocations on identical input. The ``source.timestamp`` field
+        embedded in ``supporting_data`` via ``make_source`` is
+        intentionally fresh per call — it is provenance metadata
+        marking when the result was generated, not a semantic output.
+        ``_now_iso`` truncates to second precision, so the previous
+        un-mocked form passed only when both calls landed in the same
+        wall-clock second; crossing a 1-second boundary made the
+        assertion fail probabilistically (observed on ubuntu-latest CI).
+
+        Mocking ``_now_iso`` for the duration of the test pins the
+        provenance timestamp to a fixed value across both calls,
+        keeping the broad ``assertEqual(sd1, sd2)`` payload-equality
+        assertion strong (any non-temporal drift still fails the test)
+        while removing the accidental wall-clock coupling. Production
+        code is unchanged; the analyzer continues to emit a fresh
+        timestamp per call in real API usage.
+        """
         payload = self._pwf_payload([
             {"name": "B", "market_value": 30000, "mf_payload": self._mf_data()},
             {"name": "A", "market_value": 70000, "mf_payload": self._mf_data()},
         ])
-        r1 = analyze_portfolio_with_funds(payload)
-        r2 = analyze_portfolio_with_funds(payload)
+        with patch(
+            "backend.investment_analytics.analyzers._now_iso",
+            return_value="2026-01-01T00:00:00+00:00",
+        ):
+            r1 = analyze_portfolio_with_funds(payload)
+            r2 = analyze_portfolio_with_funds(payload)
         for i1, i2 in zip(r1["insights"], r2["insights"]):
             self.assertEqual(i1["template"], i2["template"])
             sd1 = i1["payload"].get("supporting_data")
