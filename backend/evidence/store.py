@@ -132,7 +132,11 @@ def write_evidence(
             f"this run_id into the audit log."
         )
 
-    rel_path = str(target.relative_to(data_dir))
+    # ``.as_posix()`` forces forward-slash separators on all platforms;
+    # ``str(Path)`` would emit backslash on Windows, making the audit
+    # chain's ``evidence_ref["path"]`` non-byte-canonical across hosts
+    # and unreplay-able on POSIX given a Windows-emitted ref.
+    rel_path = target.relative_to(data_dir).as_posix()
     return {"path": rel_path, "sha256": actual_sha, "size_bytes": size_bytes}
 
 
