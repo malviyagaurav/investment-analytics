@@ -55,7 +55,7 @@ data/sample/mutual_fund_nav.csv
 
 - macOS — officially supported.
 - Linux — officially supported.
-- Windows — **not officially supported.** `run.bat` is retained for legacy use but is deprecated; file-system primitives (atomic writes, file locking, scheduler integration) are tested against POSIX semantics only. Windows may be added back if a real near-term requirement emerges.
+- Windows — **not officially supported for daily operational use.** CI does run the full test suite on `windows-latest` to catch portability regressions in the locking adapter and byte-stability surface, but end-to-end behavior (server, scheduler, registry refresh under Windows file semantics) is not validated. `run.bat` is retained as a deprecated launcher. See `BOOTSTRAP.md` for the calibrated platform stance.
 
 ## Run
 
@@ -70,8 +70,20 @@ Then open:
 http://127.0.0.1:8010
 ```
 
+The equivalent invocation used by `run.command` / `run.bat` is `python -m api.server`, which additionally handles port fallback (env `PORT`, default 8010) and opens a browser (env `OPEN_BROWSER=1`).
+
 ## Test
 
+Every test under `tests/` is a `unittest.TestCase` subclass; both runners are equivalent:
+
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v          # stdlib only
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest tests/ -v                       # equivalent; matches CI
 ```
+
+CI uses pytest for richer output.
+
+## Setting up a fresh clone
+
+See [`BOOTSTRAP.md`](BOOTSTRAP.md) for the canonical clean-clone sequence, the Python version requirement (3.9), the operational state taxonomy (which directories under `data/` are tracked vs lazily created vs gitignored), and the registry-refresh procedure.

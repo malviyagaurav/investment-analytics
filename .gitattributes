@@ -1,0 +1,11 @@
+# Normalize line endings to LF on commit and on checkout.
+#
+# Rationale: the cross-platform parity tests in
+# tests/test_cross_platform.py pin a SHA-256 of canonical JSON
+# bytes. Mixed CRLF/LF in tracked files would risk silently
+# breaking the byte-equality contract on a Windows clone with
+# core.autocrlf=true. All currently tracked files already use
+# LF (verified at the time this file was added), so this
+# attribute makes the existing convention explicit and durable
+# rather than introducing a new normalization step.
+* text=auto eol=lf

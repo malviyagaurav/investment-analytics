@@ -1,0 +1,12 @@
+# Development-time dependencies.
+#
+# Installed separately from requirements.txt so a runtime-only
+# install (the path used by run.command / run.bat) stays minimal.
+# CI in .github/workflows/cross-platform-parity.yml installs from
+# this file before running the test suite.
+#
+# Test runner — every test in tests/ is a unittest.TestCase
+# subclass, so `python -m unittest discover -s tests` works
+# without pytest. pytest is used in CI for richer output and is
+# the recommended local runner once dev deps are installed.
+pytest==8.4.2

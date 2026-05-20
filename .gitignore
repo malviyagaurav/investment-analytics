@@ -39,3 +39,11 @@ data/sample_realistic_response.json
 # Local backup bundles — git bundle archives kept locally as snapshots,
 # not version-controlled (would duplicate repo state inside the repo)
 *.bundle
+
+# Rendered scheduler artifacts. Templates under scripts/ are tracked;
+# the substituted output is per-machine (contains absolute install
+# paths, venv python paths, etc.) and must never round-trip back into
+# git. Today install_scheduler.py emits scripts/scheduler-task.rendered.xml
+# on Windows; Phase C will add the same rendered/template split on macOS.
+# Defensive entry added now to protect the repo boundary in advance.
+scripts/*.rendered.*

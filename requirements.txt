@@ -1,4 +1,8 @@
 fastapi==0.115.0
 uvicorn==0.30.6
 httpx>=0.27.0
-
+# Pinned explicitly even though fastapi pulls it in transitively, so a
+# fresh `pip install -r requirements.txt` resolves to the exact version
+# the suite has been verified against rather than whatever the resolver
+# picks on the day of install. pydantic is used directly in api/models.py.
+pydantic==2.13.3
