@@ -28,6 +28,7 @@ htmlcov/
 # Runtime data (audit logs contain subject tokens)
 data/audit/
 data/cache/
+data/evidence/
 data/registry/
 
 # Watchlist snapshots — regenerated daily by backend.jobs.watchlist

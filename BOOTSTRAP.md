@@ -123,7 +123,7 @@ explicitly:
 |----------|----------|----------|
 | Canonical seeds — repository-authoritative reference data | `data/reference/`, `data/watchlist/categories.json` | tracked |
 | Reproducible sample fixtures — synthetic data for local testing and demos | `data/sample/*.csv` | tracked |
-| Mutable operational runtime state — machine-local lineage, opportunistic caches, append-only chains | `data/audit/`, `data/cache/`, `data/registry/`, `data/snapshots/`, `data/scheduler/` | gitignored, lazily created |
+| Mutable operational runtime state — machine-local lineage, opportunistic caches, append-only chains, by-reference evidence files | `data/audit/`, `data/cache/`, `data/evidence/`, `data/registry/`, `data/snapshots/`, `data/scheduler/` | gitignored, lazily created |
 
 The runtime-state directories are auto-created on demand by the
 code that writes them (`mkdir(parents=True, exist_ok=True)` in
