@@ -28,7 +28,7 @@ import os
 from typing import Optional
 
 
-DEFAULT_MODEL = "gemini-2.5-pro"
+DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_TEMPERATURE = 0.0
 API_KEY_ENV_VAR = "GEMINI_API_KEY"
 
@@ -82,7 +82,12 @@ def call_gemini(
     Args:
       prompt:       full prompt string (system instruction + evidence
                     + question; built by prompt_templates).
-      model:        model id. Defaults to gemini-2.5-pro.
+      model:        model id. Defaults to gemini-2.5-flash, the
+                    model operationally validated on 2026-05-27
+                    (one real run, zero hallucinated numbers across
+                    ~25 spot-checks). gemini-2.5-pro is paid-tier
+                    only and was not validated under this sandbox;
+                    pass it via --model if you have paid access.
       api_key:      optional explicit key; otherwise read from the
                     GEMINI_API_KEY env var. Never written to any file.
       temperature:  defaults to 0 for as-deterministic-as-possible
