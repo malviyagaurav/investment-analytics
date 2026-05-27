@@ -1,0 +1,15 @@
+# Optional LLM-assist dependencies. NOT installed by default.
+#
+# The off-chain LLM research-assistant sandbox under
+# backend.research_artifacts.llm_assist is opt-in. CI and the core
+# analytics install (`pip install -r requirements.txt`) deliberately
+# do NOT pull these — the analytics engine must remain runnable
+# without any network/LLM dependency.
+#
+# Install:
+#   python -m pip install -r requirements-llm.txt
+#
+# The sandbox CLI fails closed with a clear "install requirements-llm.txt"
+# message if the SDK is not present, so accidentally invoking it without
+# this install cannot produce silent malformed output.
+google-generativeai>=0.8.0

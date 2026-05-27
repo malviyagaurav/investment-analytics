@@ -31,6 +31,13 @@ data/cache/
 data/evidence/
 data/registry/
 
+# Off-chain LLM research notes — non-evidentiary, non-replayable,
+# operator-only research output from backend.research_artifacts.llm_assist.
+# Per the 2026-05-27 standing-instruction override governance event, these
+# artifacts deliberately do NOT participate in the audit chain or evidence
+# replay; they are local-only commentary the operator reads and acts on.
+data/llm_notes/
+
 # Watchlist snapshots — regenerated daily by backend.jobs.watchlist
 data/snapshots/
 
